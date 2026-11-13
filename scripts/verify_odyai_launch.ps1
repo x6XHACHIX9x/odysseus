@@ -2,7 +2,7 @@
     [string]$BaseUrl = "http://localhost:8000",
     [string]$AdminToken = "",
     [string]$AdminCookie = "",
-    [string]$ExpectedCommit = "8cb07ecc",
+    [string]$ExpectedCommit = "0ac4cc0d",
     [string]$RepoPath = "C:\Users\Hachi\Projects\odysseus"
 )
 
