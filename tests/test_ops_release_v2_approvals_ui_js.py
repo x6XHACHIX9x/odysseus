@@ -97,7 +97,7 @@ assert.equal(intervals.filter(x => !x.cleared).length, 2);
 _nowMs += 30_000;
 const tickTimer = intervals.find(x => x.ms === 1000 && !x.cleared);
 tickTimer.fn();
-assert.equal(ttlEl.textContent, '45s left');
+assert.equal(ttlEl.textContent, 'Expiring soon · 45s left');
 
 // Advance past expiry and fire tick -> expired approval is pruned & host hidden
 _nowMs += 50_000;
