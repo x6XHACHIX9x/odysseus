@@ -271,6 +271,7 @@ class ResearchHandler:
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
+        hardware_preset: str = None,
         owner: str = "",
     ) -> dict:
         """Start research as a background task. Returns task info dict.
@@ -357,6 +358,7 @@ class ResearchHandler:
                         session_id=session_id,
                         extraction_timeout=extraction_timeout,
                         extraction_concurrency=extraction_concurrency,
+                        hardware_preset=hardware_preset,
                     ),
                     timeout=hard_timeout,
                 )
@@ -975,6 +977,7 @@ class ResearchHandler:
         category: str = None,
         extraction_timeout: int = None,
         extraction_concurrency: int = None,
+        hardware_preset: str = None,
         session_id: str = "",
     ) -> str:
         """
@@ -1016,27 +1019,54 @@ class ResearchHandler:
             from src.deep_research import DeepResearcher
 
             from src.settings import get_setting
-            _max_report_tokens = int(get_setting("research_max_tokens", 16384))
+            from src.research_presets import get_research_preset
+            preset_cfg = get_research_preset(hardware_preset)
+            _effective_rounds = (
+                preset_cfg["max_rounds"]
+                if (preset_cfg and max_rounds == 0)
+                else max_rounds
+            )
+            _min_rounds = (
+                preset_cfg["min_rounds"]
+                if preset_cfg
+                else max(2, _effective_rounds - 2)
+            )
+            _max_urls_per_round = preset_cfg["max_urls_per_round"] if preset_cfg else 3
+            _max_content_chars = preset_cfg["max_content_chars"] if preset_cfg else 15000
+            _synthesis_window = preset_cfg["synthesis_window"] if preset_cfg else 10
+            _max_report_tokens = (
+                preset_cfg["max_report_tokens"]
+                if preset_cfg
+                else int(get_setting("research_max_tokens", 16384))
+            )
             _extraction_timeout = _bounded_int(
-                extraction_timeout if extraction_timeout is not None else get_setting("research_extraction_timeout_seconds", 90),
+                extraction_timeout
+                if extraction_timeout is not None
+                else (preset_cfg["extraction_timeout"] if preset_cfg else get_setting("research_extraction_timeout_seconds", 90)),
                 default=90,
                 minimum=15,
                 maximum=3600,
             )
             _extraction_concurrency = _bounded_int(
-                extraction_concurrency if extraction_concurrency is not None else get_setting("research_extraction_concurrency", 3),
+                extraction_concurrency
+                if extraction_concurrency is not None
+                else (preset_cfg["extraction_concurrency"] if preset_cfg else get_setting("research_extraction_concurrency", 3)),
                 default=3,
                 minimum=1,
                 maximum=12,
             )
             _planning_timeout = _bounded_int(
-                get_setting("research_planning_timeout_seconds", _extraction_timeout),
+                preset_cfg["planning_timeout"]
+                if preset_cfg
+                else get_setting("research_planning_timeout_seconds", _extraction_timeout),
                 default=_extraction_timeout,
                 minimum=15,
                 maximum=3600,
             )
             _query_timeout = _bounded_int(
-                get_setting("research_query_timeout_seconds", _extraction_timeout),
+                preset_cfg["query_timeout"]
+                if preset_cfg
+                else get_setting("research_query_timeout_seconds", _extraction_timeout),
                 default=_extraction_timeout,
                 minimum=15,
                 maximum=3600,
@@ -1046,14 +1076,17 @@ class ResearchHandler:
                 llm_endpoint=llm_endpoint,
                 llm_model=llm_model,
                 llm_headers=llm_headers,
-                max_rounds=max_rounds,
-                min_rounds=max(2, max_rounds - 2),
+                max_rounds=_effective_rounds,
+                min_rounds=min(_min_rounds, max(1, _effective_rounds)),
                 max_time=max_time,
+                max_urls_per_round=_max_urls_per_round,
+                max_content_chars=_max_content_chars,
                 max_report_tokens=_max_report_tokens,
                 extraction_timeout=_extraction_timeout,
                 planning_timeout=_planning_timeout,
                 query_timeout=_query_timeout,
                 extraction_concurrency=_extraction_concurrency,
+                synthesis_window=_synthesis_window,
                 progress_callback=progress_callback,
                 search_provider=search_provider,
                 category=category,

@@ -64,6 +64,7 @@ function _saveSettingsToStorage() {
       endpoint_id: document.getElementById('research-endpoint')?.value || '',
       model: document.getElementById('research-model')?.value || '',
       category: document.getElementById('research-category')?.value || '',
+      enable_domain_verifiers: Boolean(document.getElementById('research-domain-verifiers')?.checked),
     }));
   } catch {}
 }
@@ -404,6 +405,15 @@ function _buildPanelHTML() {
         </button>
         <div id="research-settings-body" class="research-settings-row"${settingsHidden}>
           <label class="research-setting">
+            <span class="research-setting-label">Hardware preset <span class="hwfit-help-chip hwfit-help-chip-inline" title="Tune rounds, context budget, and extraction concurrency for small (8 GB), medium (16-24 GB), or large (48+ GB) local systems.">?</span></span>
+            <select id="research-hardware-preset">
+              <option value="" selected>Auto</option>
+              <option value="small">Small (8 GB / 4B-8B)</option>
+              <option value="medium">Medium (16-24 GB / 14B-32B)</option>
+              <option value="large">Large (48+ GB / 70B+)</option>
+            </select>
+          </label>
+          <label class="research-setting">
             <span class="research-setting-label">Rounds <span class="hwfit-help-chip hwfit-help-chip-inline" title="How many search → read → reflect rounds the agent runs.">?</span></span>
             <select id="research-rounds">${roundOpts}</select>
           </label>
@@ -428,6 +438,10 @@ function _buildPanelHTML() {
           <label class="research-setting">
             <span class="research-setting-label">Model</span>
             <select id="research-model"><option value="">Default</option></select>
+          </label>
+          <label class="research-setting research-setting-toggle">
+            <span class="research-setting-label">Domain verifiers <span class="hwfit-help-chip hwfit-help-chip-inline" title="Run specialized financial, legal, medical, historical, and hardware claim verification.">?</span></span>
+            <input type="checkbox" id="research-domain-verifiers" />
           </label>
         </div>
         <div class="research-controls-row">
@@ -627,7 +641,9 @@ function _readSettings() {
     search_provider: document.getElementById('research-search-provider')?.value || undefined,
     endpoint_id: document.getElementById('research-endpoint')?.value || undefined,
     model: document.getElementById('research-model')?.value || undefined,
+    hardware_preset: document.getElementById('research-hardware-preset')?.value || undefined,
     category: category || undefined,
+    enable_domain_verifiers: document.getElementById('research-domain-verifiers')?.checked ? true : undefined,
   };
   const epSel = document.getElementById('research-endpoint');
   if (epSel && epSel.value) {
@@ -667,6 +683,8 @@ function _editJob(job) {
   const s = job.settings || {};
   const roundsEl = document.getElementById('research-rounds');
   if (roundsEl && s.max_rounds) roundsEl.value = s.max_rounds;
+  const presetEl = document.getElementById('research-hardware-preset');
+  if (presetEl) presetEl.value = s.hardware_preset || '';
   const spEl = document.getElementById('research-search-provider');
   if (spEl && s.search_provider) spEl.value = s.search_provider;
   const epEl = document.getElementById('research-endpoint');
@@ -771,6 +789,10 @@ async function _handleStart() {
 
 async function _restoreSavedSettings() {
   const saved = _loadSettingsFromStorage() || {};
+  if (saved.hardware_preset !== undefined) {
+    const presetSel = document.getElementById('research-hardware-preset');
+    if (presetSel) presetSel.value = saved.hardware_preset;
+  }
   if (saved.category !== undefined) {
     const catSel = document.getElementById('research-category');
     if (catSel) catSel.value = saved.category;
@@ -779,6 +801,8 @@ async function _restoreSavedSettings() {
   // Users can pick a specific cap each time if needed.
   const search = document.getElementById('research-search-provider');
   if (search && saved.search_provider !== undefined) search.value = saved.search_provider;
+  const dvChk = document.getElementById('research-domain-verifiers');
+  if (dvChk) dvChk.checked = Boolean(saved.enable_domain_verifiers);
 
   // The compose panel must start from the Deep Research default configured in
   // Settings. Previously it only restored an old local panel selection, so a
@@ -1638,6 +1662,10 @@ function _renderResult(job) {
     html += `<div class="research-navigation-trace">${_renderActionTrace(job.action_trace)}</div>`;
   }
 
+  if (job.domain_verification && typeof job.domain_verification === 'object') {
+    html += _renderDomainVerification(job.domain_verification, job.verification_status);
+  }
+
   const bodyCls = `research-job-report-body${cat ? ' research-body-' + cat : ''}`;
   if (_markdownModule) {
     html += `<div class="${bodyCls}">${_markdownModule.renderContent(job.result)}</div>`;
@@ -1663,6 +1691,8 @@ async function _ensureResult(job) {
     job.source_coverage = d.source_coverage || {};
     job.navigation_trace = d.navigation_trace;
     job.action_trace = d.action_trace;
+    if (d.verification_status) job.verification_status = d.verification_status;
+    if (d.domain_verification) job.domain_verification = d.domain_verification;
   } catch {}
 }
 
@@ -1834,4 +1864,55 @@ function _researchSourceBadges(source) {
   if (retrieval && retrieval !== 'fetch') badges.push(`<span class="research-source-badge">${_esc(retrieval)}</span>`);
   if (Number.isFinite(score)) badges.push(`<span class="research-source-badge">${Math.max(0, Math.min(100, Math.round(score)))}</span>`);
   return badges.length ? `<span class="research-source-badges">${badges.join('')}</span>` : '';
+}
+
+
+function _renderDomainVerification(dv, verificationStatus) {
+  const assessments = Array.isArray(dv.claim_assessments) ? dv.claim_assessments : [];
+  const conflicts = Array.isArray(dv.conflict_records) ? dv.conflict_records : [];
+  const missingDoms = Array.isArray(dv.missing_domain_domains) ? dv.missing_domain_domains : [];
+  const errors = Array.isArray(dv.plugin_errors) ? dv.plugin_errors : [];
+  const isGap = Boolean(
+    verificationStatus === 'completed_with_gaps' ||
+    dv.verification_status === 'completed_with_gaps' ||
+    dv.missing_domain_plugin ||
+    missingDoms.length ||
+    conflicts.length ||
+    errors.length
+  );
+  const status = _esc(String(verificationStatus || dv.verification_status || (isGap ? 'completed_with_gaps' : 'verified')));
+
+  let out = `<div class="research-domain-verification${isGap ? ' has-gaps' : ''}">`;
+  out += '<div class="research-dv-header">';
+  out += `<span class="research-dv-title">Domain Verification</span>`;
+  out += `<span class="research-dv-status">${status}</span>`;
+  out += `<span class="research-dv-count">${assessments.length} claim(s)</span>`;
+  out += '</div>';
+
+  if (assessments.length) {
+    out += '<ul class="research-dv-list">';
+    for (const a of assessments.slice(0, 8)) {
+      if (!a || typeof a !== 'object') continue;
+      const dom = _esc(String(a.domain || 'general').toUpperCase());
+      const verdict = _esc(String(a.claim_assessment || 'UNVERIFIED').toUpperCase());
+      const claim = _esc(String(a.claim_text || '').slice(0, 180));
+      const plugin = _esc(String(a.plugin_name || 'plugin'));
+      out += `<li class="research-dv-item"><span class="research-dv-badge">[${dom} | ${verdict}]</span> ${claim} <span class="research-dv-meta">(${plugin})</span></li>`;
+    }
+    out += '</ul>';
+  }
+
+  if (conflicts.length) {
+    out += `<div class="research-dv-alert">Preserved domain conflicts: ${conflicts.length}</div>`;
+  }
+  if (dv.missing_domain_plugin || missingDoms.length) {
+    const label = missingDoms.length ? _esc(missingDoms.join(', ')) : 'unspecified';
+    out += `<div class="research-dv-alert">Missing domain verifier coverage: ${label}</div>`;
+  }
+  if (errors.length) {
+    out += `<div class="research-dv-alert">Domain verifier plugin faults (fail-closed): ${errors.length}</div>`;
+  }
+
+  out += '</div>';
+  return out;
 }

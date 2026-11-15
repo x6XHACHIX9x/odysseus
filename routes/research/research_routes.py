@@ -542,6 +542,14 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         extraction_concurrency: Optional[int] = Field(default=None, ge=1, le=12)
         category: Optional[Literal["product", "comparison", "howto", "factcheck"]] = None
 
+        hardware_preset: Optional[Literal["small", "medium", "large"]] = None
+    @router.get("/api/research/presets")
+    async def research_presets(request: Request):
+        """Return available local hardware presets for Deep Research."""
+        _require_user(request)
+        from src.research_presets import list_research_presets
+        return {"presets": list_research_presets()}
+
     @router.post("/api/research/start")
     async def research_start(body: ResearchStartRequest, request: Request):
         """Launch a research job from the dedicated panel."""
@@ -620,8 +628,11 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             if body.model:
                 ep_model = body.model
 
-        # 0 = auto research capped at 20.
-        effective_max_rounds = body.max_rounds if body.max_rounds != 0 else 20
+        from src.research_presets import get_research_preset
+        _preset = get_research_preset(body.hardware_preset)
+        # 0 = auto research capped at preset max_rounds or 20.
+        effective_max_rounds = body.max_rounds if body.max_rounds != 0 else (_preset["max_rounds"] if _preset else 20)
+        effective_max_time = body.max_time if "max_time" in body.model_fields_set else (_preset["max_time"] if _preset else body.max_time)
         if body.origin_chat_id and 'max_rounds' not in body.model_fields_set:
             effective_max_rounds = 2
         if body.origin_chat_id:
@@ -631,13 +642,14 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             query=body.query,
             llm_endpoint=ep_url,
             llm_model=ep_model,
-            max_time=body.max_time,
+            max_time=effective_max_time,
             llm_headers=ep_headers,
             max_rounds=effective_max_rounds,
             search_provider=body.search_provider or None,
             category=body.category or None,
             extraction_timeout=body.extraction_timeout,
             extraction_concurrency=body.extraction_concurrency,
+            hardware_preset=body.hardware_preset,
             owner=user,
             on_complete=(lambda sid, result, sources, findings: delivery.complete(sid, result, sources))
                 if body.origin_chat_id else None,
