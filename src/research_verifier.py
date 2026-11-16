@@ -283,7 +283,6 @@ _DOMAIN_FOLLOWUP_GAP_VERDICTS = frozenset({
     "CONTESTED",
     "INSUFFICIENT_EVIDENCE",
     "UNSUPPORTED",
-    "CONFLICTING_EVIDENGE",
     "CONFLICTING_EVIDENCE",
 })
 
@@ -291,8 +290,24 @@ _DOMAIN_FOLLOWUP_TEMPLATES: Dict[str, str] = {
     "financial": '"{core}" SEC filing 10-K 10-Q official financial report',
     "legal": '"{core}" statute effective date court ruling official text',
     "medical": '"{core}" peer reviewed randomized controlled trial clinical guideline',
+    "historical": '"{core}" primary historical archive contemporaneous chronicle official record',
     "technical": '"{core}" official specification documentation benchmark',
     "general": '"{core}" primary source official verification',
+}
+
+_EVIDENCE_CLASSIFICATION_FOLLOWUP_TEMPLATES: Dict[str, str] = {
+    # DR-5.8 Historical classifications
+    "UNDATED_HISTORICAL_CLAIM": '"{core}" exact year date BCE CE primary historical chronicle',
+    "JULIAN_GREGORIAN_CALENDAR_MISMATCH": '"{core}" Julian Old Style Gregorian New Style calendar date',
+    "ANACHRONISTIC_POLITY_ATTRIBUTION": '"{core}" founding date historical polity contemporaneous name',
+    "DISCREDITED_OR_FORGED_SOURCE": '"{core}" authentic primary archive critical edition historiography',
+    # DR-5.3.1 Financial classifications
+    "GAAP_NON_GAAP_MISMATCH": '"{core}" GAAP reconciliation SEC 10-K 10-Q filing',
+    # DR-5.3.2 Legal classifications
+    "SUPERSEDED_OR_REPEALED_STATUTE": '"{core}" current codified statute effective date amendment',
+    "CURRENT_STATUS_NOT_ESTABLISHED": '"{core}" enacted statute effective date official code',
+    # DR-5.3.3 Medical classifications
+    "PREPRINT_NOT_PEER_REVIEWED": '"{core}" peer reviewed journal publication clinical trial',
 }
 
 
@@ -330,14 +345,18 @@ def _build_domain_followup_queries(
         words = cleaned.split()
         if len(words) < 2:
             continue
-        core = " ".join(words[:10])
+        core = " ".join(words[:10]).rstrip(".,;:!?")
         if len(core) > 90:
-            core = core[:90].rsplit(" ", 1)[0].strip()
+            core = core[:90].rsplit(" ", 1)[0].strip().rstrip(".,;:!?")
         if len(core.split()) < 2:
             continue
 
         domain = str(item.get("domain", "general")).strip().lower()
-        template = _DOMAIN_FOLLOWUP_TEMPLATES.get(domain, _DOMAIN_FOLLOWUP_TEMPLATES["general"])
+        ev_class = str(item.get("evidence_classification", "")).strip().upper()
+        template = (
+            _EVIDENCE_CLASSIFICATION_FOLLOWUP_TEMPLATES.get(ev_class)
+            or _DOMAIN_FOLLOWUP_TEMPLATES.get(domain, _DOMAIN_FOLLOWUP_TEMPLATES["general"])
+        )
         candidate = template.format(core=core).strip()
         key = candidate.lower()
         if key not in seen:
