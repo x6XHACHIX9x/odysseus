@@ -3369,6 +3369,98 @@ function initRag() {
     } catch (e) { ragMsg('Error: ' + e.message, true); }
     btn.disabled = false; btn.textContent = 'Add Directory';
   });
+  const statusEl = el('adm-ragStatus');
+  if (statusEl && !el('adm-odyaiSearchBox')) {
+    const box = document.createElement('div');
+    box.id = 'adm-odyaiSearchBox';
+    box.style.cssText = 'margin-top:12px;padding-top:12px;border-top:1px solid var(--border);';
+    box.innerHTML = `
+      <div class="admin-rag-section-label">OdyAI Federated Archive Search</div>
+      <div class="admin-rag-dir-row" style="margin-bottom:6px;">
+        <input type="text" id="adm-odyaiQueryInput" placeholder="Search personal docs, We All Shine LLC, or DJI transcripts..." />
+        <button type="button" id="adm-odyaiSearchBtn">Search</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;margin-bottom:8px;color:var(--fg);">
+        <label style="display:inline-flex;align-items:center;gap:4px;">Domain:
+          <select id="adm-odyaiDomainSel" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;">
+            <option value="all">All (Docs + Media)</option>
+            <option value="docs">Documents / OCR</option>
+            <option value="media">Media Transcripts</option>
+          </select>
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:4px;">Scope:
+          <select id="adm-odyaiScopeSel" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;">
+            <option value="all">All Scopes</option>
+            <option value="personal">Personal</option>
+            <option value="business">Business (We All Shine LLC)</option>
+          </select>
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" id="adm-odyaiGatewayOnly" /> Exact FTS5 Only
+        </label>
+      </div>
+      <div id="adm-odyaiResults"></div>
+    `;
+    statusEl.insertAdjacentElement('afterend', box);
+
+    const runArchiveSearch = async () => {
+      const q = el('adm-odyaiQueryInput').value.trim();
+      const resBox = el('adm-odyaiResults');
+      if (!q) return;
+      const domVal = el('adm-odyaiDomainSel').value;
+      const scopeVal = el('adm-odyaiScopeSel').value;
+      const gatewayOnly = !!el('adm-odyaiGatewayOnly').checked;
+      const domains = domVal === 'all' ? ['docs', 'media'] : [domVal];
+      const owner_scopes = scopeVal === 'all' ? ['personal', 'business'] : [scopeVal];
+
+      resBox.innerHTML = '<div class="admin-empty">Searching OdyAI archive...</div>';
+      try {
+        const res = await fetch('/api/personal/archive/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ query: q, domains, owner_scopes, top_k: 8, gateway_only: gatewayOnly }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          resBox.innerHTML = `<div class="admin-error">${esc(data.detail || 'Search failed')}</div>`;
+          return;
+        }
+        const items = data.results || [];
+        if (items.length === 0) {
+          resBox.innerHTML = '<div class="admin-empty">No matching archive records found.</div>';
+          return;
+        }
+        resBox.innerHTML = items.map(item => {
+          const loc = item.location || {};
+          const locBadge = loc.start_ts
+            ? `${esc(loc.start_ts)}-${esc(loc.end_ts || '')}`
+            : (loc.page ? `p. ${esc(String(loc.page))}` : '');
+          const scopeBadge = esc(item.owner_scope || 'personal');
+          const domBadge = esc(item.domain || 'docs');
+          const snippet = esc((item.text || '').slice(0, 260));
+          return `
+            <div class="admin-rag-item" style="flex-direction:column;align-items:flex-start;gap:4px;margin-bottom:6px;border:1px solid var(--border);border-radius:6px;padding:8px;">
+              <div style="display:flex;width:100%;align-items:center;gap:6px;">
+                <span class="admin-rag-item-name" style="font-weight:600;" title="${esc(item.source || '')}">${esc(item.filename || 'unknown')}</span>
+                <span class="admin-rag-item-meta">[${scopeBadge} / ${domBadge}${locBadge ? ' ? ' + locBadge : ''}]</span>
+                <span class="admin-rag-item-meta">score ${Number(item.score || 0).toFixed(3)}</span>
+              </div>
+              <div style="font-size:11px;color:color-mix(in srgb, var(--fg) 75%, transparent);line-height:1.35;white-space:pre-wrap;">${snippet}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        resBox.innerHTML = `<div class="admin-error">Search error: ${esc(err.message)}</div>`;
+      }
+    };
+
+    el('adm-odyaiSearchBtn').addEventListener('click', runArchiveSearch);
+    el('adm-odyaiQueryInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); runArchiveSearch(); }
+    });
+  }
+
   el('adm-ragReloadBtn').addEventListener('click', async () => {
     const btn = el('adm-ragReloadBtn');
     btn.disabled = true; btn.textContent = 'Reloading...';

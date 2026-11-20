@@ -16,6 +16,10 @@ from core.middleware import require_admin
 from src.path_confinement import confine
 from src.upload_handler import secure_filename
 from src.upload_limits import PERSONAL_UPLOAD_MAX_BYTES
+from pydantic import BaseModel, Field
+from services.docs.service import DocsService
+from scripts.local_intelligence_gateway import AuthContext
+from src.owner_identity import auth_disabled
 
 UPLOADS_DIR = PERSONAL_UPLOADS_DIR
 
@@ -122,6 +126,14 @@ def rename_personal_upload_owner(
         "rag_result": rag_result,
     }
 
+
+
+class ArchiveSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    domains: List[str] = Field(default_factory=lambda: ["docs", "media"])
+    owner_scopes: List[str] = Field(default_factory=lambda: ["personal", "business"])
+    top_k: int = Field(default=8, ge=1, le=25)
+    gateway_only: bool = Field(default=False)
 
 def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
     """
@@ -447,5 +459,96 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
         except Exception as e:
             logger.error(f"Failed to delete file {filepath}: {e}")
             raise HTTPException(500, f"Failed to delete file: {str(e)}")
+
+
+    @router.post("/archive/search")
+    async def search_local_archive_route(
+        request: Request,
+        body: ArchiveSearchRequest,
+        user: str = Depends(require_user),
+    ):
+        """Federated OdyAI archive/OCR/media search with fail-closed scope gating."""
+        query_text = (body.query or "").strip()
+        if not query_text:
+            raise HTTPException(400, "Query must not be empty")
+
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+
+        # Enforce document privilege for non-admin sessions
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        granted_scopes = {"docs:read", "media:read", "personal:read"}
+        if is_admin:
+            granted_scopes.update({
+                "business:read",
+                "tier:restricted-financial",
+                "tier:restricted-pii",
+            })
+
+        req_domains = tuple(d for d in (body.domains or ["docs", "media"]) if d in {"docs", "media"}) or ("docs", "media")
+        req_scopes = tuple(s for s in (body.owner_scopes or ["personal", "business"]) if s in {"personal", "business"}) or ("personal",)
+
+        if "business" in req_scopes and "business:read" not in granted_scopes:
+            raise HTTPException(403, "Caller lacks required scope 'business:read'.")
+
+        auth_ctx = AuthContext(
+            owner=user or "local",
+            scopes=frozenset(granted_scopes),
+            auth_method="session",
+            session_id=str(getattr(request.state, "session_id", "web-session")),
+        )
+
+        docs_svc = DocsService()
+        try:
+            if body.gateway_only:
+                chunks = await docs_svc.query_local_archive(
+                    query_text,
+                    auth_context=auth_ctx,
+                    domains=req_domains,
+                    owner_scopes=req_scopes,
+                    top_k=body.top_k,
+                )
+            else:
+                chunks = await docs_svc.query(
+                    query_text,
+                    top_k=body.top_k,
+                    auth_context=auth_ctx,
+                    domains=req_domains,
+                    owner_scopes=req_scopes,
+                )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except Exception as exc:
+            logger.error(f"Archive search failed: {exc}")
+            raise HTTPException(500, f"Archive search failed: {exc}")
+
+        results = []
+        for ch in chunks[: body.top_k]:
+            meta = ch.metadata if isinstance(ch.metadata, dict) else {}
+            results.append({
+                "text": ch.text,
+                "source": ch.source,
+                "score": round(float(ch.score or 0.0), 4),
+                "retrieval_tier": meta.get("retrieval_tier", "chroma_rag"),
+                "domain": meta.get("domain", "docs"),
+                "owner_scope": meta.get("owner_scope", "personal"),
+                "category": meta.get("category", ""),
+                "filename": meta.get("filename") or Path(str(ch.source)).name,
+                "location": meta.get("location", {}),
+                "redacted": bool(meta.get("redacted", False)),
+            })
+
+        return {
+            "success": True,
+            "query": query_text,
+            "count": len(results),
+            "gateway_only": body.gateway_only,
+            "results": results,
+        }
 
     return router
