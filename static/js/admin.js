@@ -3447,9 +3447,54 @@ function initRag() {
                 <span class="admin-rag-item-meta">score ${Number(item.score || 0).toFixed(3)}</span>
               </div>
               <div style="font-size:11px;color:color-mix(in srgb, var(--fg) 75%, transparent);line-height:1.35;white-space:pre-wrap;">${snippet}</div>
+              ${item.domain === 'media' && item.media_id ? `
+                <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                  <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;"
+                    data-odyai-draft-media="${esc(String(item.media_id))}"
+                    data-odyai-start-ts="${esc(String(loc.start_ts || ''))}"
+                    data-odyai-end-ts="${esc(String(loc.end_ts || ''))}"
+                    data-odyai-quote="${esc((item.text || '').slice(0, 300))}">Generate Publishing Draft</button>
+                  <span class="admin-rag-item-meta" data-odyai-draft-status="${esc(String(item.media_id))}"></span>
+                </div>
+              ` : ''}
             </div>
           `;
         }).join('');
+
+        resBox.querySelectorAll('[data-odyai-draft-media]').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const mediaId = Number(btn.dataset.odyaiDraftMedia);
+            const statusSpan = resBox.querySelector(`[data-odyai-draft-status="${mediaId}"]`);
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            try {
+              const dRes = await fetch('/api/personal/archive/media-draft', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                  media_id: mediaId,
+                  highlight_start_ts: btn.dataset.odyaiStartTs || '',
+                  highlight_end_ts: btn.dataset.odyaiEndTs || '',
+                  highlight_quote: btn.dataset.odyaiQuote || '',
+                }),
+              });
+              const dData = await dRes.json();
+              if (dRes.ok && dData.success) {
+                btn.textContent = 'Draft Created';
+                if (statusSpan) statusSpan.textContent = `${dData.draft_id} (${dData.status})`;
+              } else {
+                btn.disabled = false;
+                btn.textContent = 'Generate Publishing Draft';
+                if (statusSpan) statusSpan.textContent = dData.detail || 'Draft failed';
+              }
+            } catch (e) {
+              btn.disabled = false;
+              btn.textContent = 'Generate Publishing Draft';
+              if (statusSpan) statusSpan.textContent = e.message;
+            }
+          });
+        });
       } catch (err) {
         resBox.innerHTML = `<div class="admin-error">Search error: ${esc(err.message)}</div>`;
       }

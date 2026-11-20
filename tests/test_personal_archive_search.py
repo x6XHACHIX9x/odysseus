@@ -187,3 +187,72 @@ def test_archive_search_grants_admin_full_scopes_and_returns_redacted_hits(monke
     assert body["results"][0]["filename"] == "08-31-26 Stmt.pdf"
     assert body["results"][0]["redacted"] is True
     assert {"docs:read", "media:read", "personal:read", "business:read", "tier:restricted-financial", "tier:restricted-pii"} <= captured["scopes"]
+
+
+def test_media_draft_endpoint_requires_auth_and_generates_human_approved_draft(tmp_path, monkeypatch) -> None:
+    import json
+    import sqlite3
+    import scripts.stream_pipeline as sp
+
+    fake_db = tmp_path / "stream_media_catalog.db"
+    fake_drafts = tmp_path / "stream_drafts"
+    con = sqlite3.connect(str(fake_db))
+    con.executescript(
+        """
+        CREATE TABLE media_items (
+            id INTEGER PRIMARY KEY,
+            source_path TEXT,
+            filename TEXT,
+            ext TEXT,
+            size_bytes INTEGER,
+            is_duplicate INTEGER DEFAULT 0,
+            media_role TEXT,
+            paired_audio_path TEXT,
+            duration_sec REAL,
+            resolution TEXT,
+            transcript_json_path TEXT
+        );
+        CREATE TABLE publishing_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            draft_id TEXT,
+            media_id INTEGER,
+            created_at TEXT,
+            status TEXT,
+            draft_md_path TEXT,
+            draft_json_path TEXT
+        );
+        INSERT INTO media_items (id, source_path, filename, ext, size_bytes, is_duplicate, media_role)
+        VALUES (7, 'G:/03_CONTENT_AND_MEDIA/clip_07.mp4', 'clip_07.mp4', '.mp4', 10485760, 0, 'dji_camera_clip');
+        """
+    )
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(sp, "STREAM_DB", fake_db)
+    monkeypatch.setattr(sp, "DRAFT_DIR", fake_drafts)
+    monkeypatch.setattr(sp, "probe_video_meta", lambda path, ext: (42.5, "1920x1080"))
+
+    client = _build_test_client(_StubAuthManager())
+
+    r_unauth = client.post("/api/personal/archive/media-draft", json={"media_id": 7})
+    assert r_unauth.status_code == 401
+
+    r_ok = client.post(
+        "/api/personal/archive/media-draft",
+        headers={"x-test-user": "hachi"},
+        json={
+            "media_id": 7,
+            "highlight_start_ts": "00:01:12",
+            "highlight_end_ts": "00:01:28",
+            "highlight_quote": "Testing the new studio mic chain",
+        },
+    )
+    assert r_ok.status_code == 200, r_ok.text
+    body = r_ok.json()
+    assert body["success"] is True
+    assert body["status"] == "awaiting_human_approval"
+    assert body["auto_upload_blocked"] is True
+
+    j_data = json.loads(Path(body["draft_json_path"]).read_text(encoding="utf-8"))
+    assert j_data["matched_highlight"]["start_ts"] == "00:01:12"
+    assert j_data["auto_upload_blocked"] is True

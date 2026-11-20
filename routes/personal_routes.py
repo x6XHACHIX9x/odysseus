@@ -128,6 +128,13 @@ def rename_personal_upload_owner(
 
 
 
+class MediaDraftRequest(BaseModel):
+    media_id: int = Field(..., ge=1)
+    highlight_start_ts: str = Field(default="", max_length=32)
+    highlight_end_ts: str = Field(default="", max_length=32)
+    highlight_quote: str = Field(default="", max_length=600)
+
+
 class ArchiveSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     domains: List[str] = Field(default_factory=lambda: ["docs", "media"])
@@ -540,6 +547,7 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
                 "category": meta.get("category", ""),
                 "filename": meta.get("filename") or Path(str(ch.source)).name,
                 "location": meta.get("location", {}),
+                "media_id": meta.get("media_id"),
                 "redacted": bool(meta.get("redacted", False)),
             })
 
@@ -549,6 +557,105 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
             "count": len(results),
             "gateway_only": body.gateway_only,
             "results": results,
+        }
+
+
+    @router.post("/archive/media-draft")
+    async def create_media_publishing_draft_route(
+        request: Request,
+        body: MediaDraftRequest,
+        user: str = Depends(require_user),
+    ):
+        """Generate a human-approved M9 publishing draft from a media search hit (zero auto-upload)."""
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        import asyncio
+        import json as _json
+        import sqlite3 as _sqlite3
+        from scripts.stream_pipeline import DRAFT_DIR, STREAM_DB, cmd_draft_package
+
+        if not STREAM_DB.exists():
+            raise HTTPException(404, "Stream media catalog not initialized.")
+
+        def _generate_sync() -> dict:
+            con = _sqlite3.connect(f"file:{STREAM_DB.resolve()}?mode=ro", uri=True)
+            con.row_factory = _sqlite3.Row
+            try:
+                media_row = con.execute(
+                    "SELECT id, filename, source_path FROM media_items WHERE id = ? AND is_duplicate = 0",
+                    (body.media_id,),
+                ).fetchone()
+            finally:
+                con.close()
+
+            if not media_row:
+                raise KeyError(f"Media item id={body.media_id} not found")
+
+            cmd_draft_package(media_id=body.media_id)
+
+            con_after = _sqlite3.connect(f"file:{STREAM_DB.resolve()}?mode=ro", uri=True)
+            con_after.row_factory = _sqlite3.Row
+            try:
+                draft_row = con_after.execute(
+                    """
+                    SELECT draft_id, media_id, created_at, status, draft_md_path, draft_json_path
+                    FROM publishing_drafts
+                    WHERE media_id = ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (body.media_id,),
+                ).fetchone()
+            finally:
+                con_after.close()
+
+            if not draft_row:
+                raise RuntimeError("Draft package generation produced no publishing_drafts record")
+
+            d = dict(draft_row)
+            j_path = Path(d["draft_json_path"])
+            m_path = Path(d["draft_md_path"])
+            if (body.highlight_start_ts or body.highlight_quote) and j_path.exists():
+                payload = _json.loads(j_path.read_text(encoding="utf-8"))
+                payload["matched_highlight"] = {
+                    "start_ts": body.highlight_start_ts,
+                    "end_ts": body.highlight_end_ts,
+                    "quote": body.highlight_quote,
+                }
+                j_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+                if m_path.exists():
+                    ts_span = f"{body.highlight_start_ts}-{body.highlight_end_ts}".strip("-")
+                    extra_md = "\n".join([
+                        "",
+                        f"## Matched Search Highlight ({ts_span or 'clip'})",
+                        f"> {body.highlight_quote}",
+                        "",
+                    ])
+                    m_path.write_text(m_path.read_text(encoding="utf-8") + extra_md, encoding="utf-8")
+
+            return d
+
+        try:
+            draft_info = await asyncio.to_thread(_generate_sync)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except Exception as exc:
+            logger.error(f"Media publishing draft generation failed: {exc}")
+            raise HTTPException(500, f"Draft generation failed: {exc}")
+
+        return {
+            "success": True,
+            "draft_id": draft_info["draft_id"],
+            "media_id": draft_info["media_id"],
+            "status": draft_info["status"],
+            "auto_upload_blocked": True,
+            "draft_md_path": draft_info["draft_md_path"],
+            "draft_json_path": draft_info["draft_json_path"],
         }
 
     return router
