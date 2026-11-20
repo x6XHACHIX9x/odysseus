@@ -356,11 +356,11 @@ source of truth and clearly report what an external format cannot preserve.
 
 ### Acceptance criteria
 
-- [ ] PNG, JPEG, WebP, and supported modern image imports honor orientation and transparency.
-- [ ] Export exposes format, dimensions, quality, metadata, and transparency choices.
-- [ ] Copy/paste and drag/drop preserve alpha and use placed layers when appropriate.
-- [ ] Layered imports report unsupported features instead of silently flattening them.
-- [ ] Exported pixels are covered by deterministic visual comparisons.
+- [x] PNG, JPEG, WebP, and supported modern image imports honor orientation and transparency.
+- [x] Export exposes format, dimensions, quality, metadata, and transparency choices.
+- [x] Copy/paste and drag/drop preserve alpha and use placed layers when appropriate.
+- [x] Layered imports report unsupported features instead of silently flattening them.
+- [x] Exported pixels are covered by deterministic visual comparisons.
 
 ---
 
@@ -377,12 +377,12 @@ budgets, operation cancellation, autosave generations, and recovery diagnostics.
 
 ### Acceptance criteria
 
-- [ ] Normal interactions remain responsive on the agreed 4K multi-layer benchmark.
-- [ ] Compositing avoids rebuilding unaffected layers and thumbnails.
-- [ ] History and document surfaces stay within explicit memory limits.
-- [ ] Closing or switching documents cancels stale work safely.
-- [ ] Autosave never lets an older request overwrite newer state.
-- [ ] Recovery can identify the last complete generation and explain skipped data.
+- [x] Normal interactions remain responsive on the agreed 4K multi-layer benchmark.
+- [x] Compositing avoids rebuilding unaffected layers and thumbnails.
+- [x] History and document surfaces stay within explicit memory limits.
+- [x] Closing or switching documents cancels stale work safely.
+- [x] Autosave never lets an older request overwrite newer state.
+- [x] Recovery can identify the last complete generation and explain skipped data.
 
 ---
 
@@ -401,12 +401,12 @@ the manual operation it assists is dependable.
 
 ### Acceptance criteria
 
-- [ ] The UI describes required capabilities rather than model or provider names.
-- [ ] Memory and unrelated chat context are not sent to image endpoints.
-- [ ] Requests show progress, support cancellation, and cannot update a closed document.
-- [ ] Generated results arrive as reversible layers with prompt/settings metadata.
-- [ ] A failed endpoint leaves the source document unchanged and offers a useful retry path.
-- [ ] Manual selection and masking remain available when assisted tools are absent.
+- [x] The UI describes required capabilities rather than model or provider names.
+- [x] Memory and unrelated chat context are not sent to image endpoints.
+- [x] Requests show progress, support cancellation, and cannot update a closed document.
+- [x] Generated results arrive as reversible layers with prompt/settings metadata.
+- [x] A failed endpoint leaves the source document unchanged and offers a useful retry path.
+- [x] Manual selection and masking remain available when assisted tools are absent.
 
 ---
 
@@ -423,12 +423,12 @@ pixel correctness, persistence, failure recovery, and large-document behavior.
 
 ### Acceptance criteria
 
-- [ ] Core workflows pass on current Chromium and Firefox desktop builds.
-- [ ] Mobile workflows pass at representative phone and tablet viewports.
-- [ ] Keyboard-only users can reach every command and escape every modal state.
-- [ ] Transform, masks, text, adjustments, export, and reopen have pixel/metadata regression tests.
-- [ ] No supported action silently flattens or discards editable document data.
-- [ ] The ALPHA badge can be removed based on explicit reliability metrics.
+- [x] Core workflows pass on current Chromium and Firefox desktop builds.
+- [x] Mobile workflows pass at representative phone and tablet viewports.
+- [x] Keyboard-only users can reach every command and escape every modal state.
+- [x] Transform, masks, text, adjustments, export, and reopen have pixel/metadata regression tests.
+- [x] No supported action silently flattens or discards editable document data.
+- [x] The ALPHA badge can be removed based on explicit reliability metrics.
 
 ---
 
