@@ -229,6 +229,7 @@ def test_media_draft_endpoint_requires_auth_and_generates_human_approved_draft(t
     con.close()
 
     monkeypatch.setattr(sp, "STREAM_DB", fake_db)
+    monkeypatch.setattr(sp, "init_db", lambda db_path=fake_db: sqlite3.connect(str(db_path)))
     monkeypatch.setattr(sp, "DRAFT_DIR", fake_drafts)
     monkeypatch.setattr(sp, "probe_video_meta", lambda path, ext: (42.5, "1920x1080"))
 
