@@ -24,7 +24,7 @@ def fmt_ts(sec: float | None) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-async def run_query(query: str, *, domain: str, scope: str, top_k: int) -> None:
+async def run_query(query: str, *, domain: str, scope: str, top_k: int, gateway_only: bool) -> None:
     svc = DocsService()
     auth = AuthContext(
         owner="admin",
@@ -43,7 +43,7 @@ async def run_query(query: str, *, domain: str, scope: str, top_k: int) -> None:
     domains = ("docs", "media") if domain == "all" else (domain,)
     owner_scopes = ("personal", "business") if scope == "all" else (scope,)
 
-    if domain == "media":
+    if gateway_only or domain == "media":
         hits = await svc.query_local_archive(
             query,
             auth_context=auth,
@@ -60,7 +60,8 @@ async def run_query(query: str, *, domain: str, scope: str, top_k: int) -> None:
             top_k=top_k,
         )
 
-    print(f"\n=== ODYAI RESULTS FOR: {query!r} ({len(hits)} hits) ===\n")
+    mode_label = "GATEWAY-ONLY" if gateway_only else "FEDERATED"
+    print(f"\n=== ODYAI {mode_label} RESULTS FOR: {query!r} ({len(hits)} hits) ===\n")
     for idx, h in enumerate(hits, 1):
         meta = h.metadata or {}
         tier = meta.get("retrieval_tier", "unknown")
@@ -85,8 +86,17 @@ def main() -> None:
     parser.add_argument("--domain", choices=("all", "docs", "media"), default="all", help="Filter domain.")
     parser.add_argument("--scope", choices=("all", "personal", "business"), default="all", help="Filter owner scope.")
     parser.add_argument("--top-k", type=int, default=6, help="Maximum hits per retrieval tier.")
+    parser.add_argument("--gateway-only", action="store_true", help="Bypass ChromaDB and query SQLite FTS5 archive/media indexes directly.")
     args = parser.parse_args()
-    asyncio.run(run_query(args.query, domain=args.domain, scope=args.scope, top_k=args.top_k))
+    asyncio.run(
+        run_query(
+            args.query,
+            domain=args.domain,
+            scope=args.scope,
+            top_k=args.top_k,
+            gateway_only=args.gateway_only,
+        )
+    )
 
 
 if __name__ == "__main__":
