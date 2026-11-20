@@ -4721,6 +4721,30 @@ export default adminModule;
         </div>
         <div id="sys-odyaiDraftQueue" style="display:flex;flex-direction:column;gap:6px;"></div>
       </div>
+      <div style="padding-top:10px;margin-top:10px;border-top:1px solid var(--border);">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;">
+          <span style="font-size:12px;font-weight:600;color:var(--fg);">Document Metadata Review &amp; Confirm <span id="sys-odyaiMetaStats" style="font-weight:400;opacity:0.75;"></span></span>
+          <button type="button" id="sys-odyaiLoadMetaBtn" class="admin-btn-secondary" style="font-size:11px;padding:3px 9px;cursor:pointer;">Load Docs</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:11px;">
+          <input type="text" id="sys-odyaiMetaQuery" placeholder="Filter by filename, category, or text..." style="flex:1;min-width:160px;padding:4px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:11px;" />
+          <select id="sys-odyaiMetaStatusSel" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;">
+            <option value="unconfirmed">Unconfirmed Only</option>
+            <option value="confirmed">Confirmed Only</option>
+            <option value="all">All Records</option>
+          </select>
+          <select id="sys-odyaiMetaTierSel" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;">
+            <option value="all">All Tiers</option>
+            <option value="general-rag">general-rag</option>
+            <option value="business-rag">business-rag</option>
+            <option value="personal-private">personal-private</option>
+            <option value="restricted-financial">restricted-financial</option>
+            <option value="restricted-pii">restricted-pii</option>
+            <option value="excluded">excluded</option>
+          </select>
+        </div>
+        <div id="sys-odyaiMetaList" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
     `;
     return true;
   };
@@ -4837,6 +4861,110 @@ export default adminModule;
       e.preventDefault();
       e.stopPropagation();
       await runSearch();
+      return;
+    }
+
+    const loadMetaDocs = async () => {
+      ensureCardMarkup();
+      const listEl = document.getElementById('sys-odyaiMetaList');
+      const statsEl = document.getElementById('sys-odyaiMetaStats');
+      if (!listEl) return;
+      const q = (document.getElementById('sys-odyaiMetaQuery') || {}).value || '';
+      const status = (document.getElementById('sys-odyaiMetaStatusSel') || {}).value || 'unconfirmed';
+      const tier = (document.getElementById('sys-odyaiMetaTierSel') || {}).value || 'all';
+      listEl.innerHTML = '<div style="font-size:11px;opacity:0.7;">Loading archive metadata...</div>';
+      try {
+        const qs = new URLSearchParams({ q, review_status: status, sensitivity_tier: tier, limit: '10' });
+        const r = await fetch(`/api/personal/archive/metadata?${qs.toString()}`, { credentials: 'same-origin' });
+        const d = await r.json();
+        if (!r.ok) {
+          listEl.innerHTML = `<div style="font-size:11px;color:var(--red);">${escHtml(d.detail || 'Error loading metadata')}</div>`;
+          return;
+        }
+        if (statsEl) {
+          statsEl.textContent = `(${d.confirmed_count || 0} confirmed / ${d.unconfirmed_count || 0} unconfirmed)`;
+        }
+        const recs = Array.isArray(d.records) ? d.records : [];
+        if (!recs.length) {
+          listEl.innerHTML = '<div style="font-size:11px;opacity:0.7;">No matching documents found.</div>';
+          return;
+        }
+        const tiers = ['general-rag', 'business-rag', 'personal-private', 'restricted-financial', 'restricted-pii', 'excluded'];
+        listEl.innerHTML = recs.map(rec => {
+          const rid = Number(rec.id);
+          const badge = rec.metadata_confirmed ? 'Confirmed' : 'Needs Review';
+          const badgeColor = rec.metadata_confirmed ? 'var(--green, #22c55e)' : 'var(--amber, #f59e0b)';
+          const contentText = (rec.extracted_content || rec.snippet_preview || '(No extracted text preview yet)').slice(0, 650);
+          const tierOpts = tiers.map(t => `<option value="${t}" ${rec.sensitivity_tier === t ? 'selected' : ''}>${t}</option>`).join('');
+          return `
+            <div data-meta-row="${rid}" style="padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;">
+                <strong style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(rec.current_path || '')}">${escHtml(rec.filename || rec.current_path || ('#' + rid))}</strong>
+                <span style="font-size:10px;font-weight:600;color:${badgeColor};flex-shrink:0;">${badge} (conf ${Number(rec.confidence || 0).toFixed(2)})</span>
+              </div>
+              <div style="font-size:10px;opacity:0.65;margin-bottom:6px;word-break:break-all;">${escHtml(rec.current_path || '')}</div>
+              <pre style="margin:0 0 6px 0;padding:6px;border-radius:5px;border:1px solid var(--border);font-size:10px;white-space:pre-wrap;max-height:95px;overflow-y:auto;opacity:0.9;">${escHtml(contentText)}</pre>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;font-size:11px;">
+                <input type="text" data-meta-cat="${rid}" value="${escHtml(rec.proposed_category || '')}" placeholder="Category" style="flex:1;min-width:130px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:11px;" />
+                <select data-meta-scope="${rid}" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;">
+                  <option value="personal" ${rec.owner_scope === 'personal' ? 'selected' : ''}>personal</option>
+                  <option value="business" ${rec.owner_scope === 'business' ? 'selected' : ''}>business</option>
+                </select>
+                <select data-meta-tier="${rid}" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;">${tierOpts}</select>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input type="text" data-meta-summary="${rid}" value="${escHtml(rec.snippet_preview || '')}" placeholder="Summary / snippet preview..." style="flex:1;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:11px;" />
+                <button type="button" class="admin-btn-primary" style="font-size:10px;padding:4px 10px;cursor:pointer;" data-meta-confirm="${rid}">Confirm Metadata</button>
+                <span data-meta-msg="${rid}" style="font-size:10px;"></span>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (err) {
+        listEl.innerHTML = `<div style="font-size:11px;color:var(--red);">Metadata load failed (${escHtml(err.message)}).</div>`;
+      }
+    };
+
+    if (target.closest('#sys-odyaiLoadMetaBtn')) {
+      e.preventDefault();
+      e.stopPropagation();
+      loadMetaDocs();
+      return;
+    }
+
+    const confirmBtn = target.closest('[data-meta-confirm]');
+    if (confirmBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const rid = Number(confirmBtn.dataset.metaConfirm);
+      const row = document.querySelector(`[data-meta-row="${rid}"]`);
+      if (!row) return;
+      const msgEl = row.querySelector(`[data-meta-msg="${rid}"]`);
+      if (msgEl) msgEl.textContent = 'Saving...';
+      fetch('/api/personal/archive/metadata/update', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          record_id: rid,
+          proposed_category: (row.querySelector(`[data-meta-cat="${rid}"]`) || {}).value || '',
+          owner_scope: (row.querySelector(`[data-meta-scope="${rid}"]`) || {}).value || 'personal',
+          sensitivity_tier: (row.querySelector(`[data-meta-tier="${rid}"]`) || {}).value || 'general-rag',
+          snippet_preview: (row.querySelector(`[data-meta-summary="${rid}"]`) || {}).value || '',
+          confirmed: true,
+        }),
+      })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => {
+          if (!ok) {
+            if (msgEl) msgEl.textContent = d.detail || 'Save failed';
+            return;
+          }
+          if (msgEl) msgEl.textContent = 'Confirmed!';
+          loadMetaDocs();
+        })
+        .catch(err => {
+          if (msgEl) msgEl.textContent = err.message || 'Error';
+        });
       return;
     }
 

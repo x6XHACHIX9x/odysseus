@@ -139,6 +139,19 @@ class MediaDraftRequest(BaseModel):
     highlight_quote: str = Field(default="", max_length=600)
 
 
+class ArchiveMetadataUpdateRequest(BaseModel):
+    record_id: int = Field(..., ge=1)
+    proposed_category: str = Field(default="", max_length=120)
+    owner_scope: str = Field(..., pattern="^(personal|business)$")
+    sensitivity_tier: str = Field(
+        ...,
+        pattern="^(general-rag|business-rag|personal-private|restricted-financial|restricted-pii|excluded)$",
+    )
+    snippet_preview: str = Field(default="", max_length=4000)
+    user_notes: str = Field(default="", max_length=2000)
+    confirmed: bool = Field(default=True)
+
+
 class ArchiveSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     domains: List[str] = Field(default_factory=lambda: ["docs", "media"])
@@ -768,5 +781,266 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
             con.close()
 
         return {"success": True, "draft_id": draft_id, "status": body.decision, "auto_upload_blocked": True}
+
+    def _ensure_archive_review_columns(con) -> None:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(archive_files)").fetchall()}
+        alters = [
+            ("metadata_confirmed", "INTEGER DEFAULT 0"),
+            ("confirmed_at", "TEXT DEFAULT ''"),
+            ("confirmed_by", "TEXT DEFAULT ''"),
+            ("user_notes", "TEXT DEFAULT ''"),
+        ]
+        for col_name, col_def in alters:
+            if col_name not in cols:
+                con.execute(f"ALTER TABLE archive_files ADD COLUMN {col_name} {col_def}")
+        con.commit()
+
+    from pathlib import Path
+    import sqlite3
+
+    def _hydrate_doc_content(row_dict: dict, ocr_db_path: Path) -> str:
+        existing = (row_dict.get("snippet_preview") or "").strip()
+        sha = (row_dict.get("sha256") or "").strip()
+        if sha and ocr_db_path.exists():
+            try:
+                ocon = sqlite3.connect(f"file:{ocr_db_path.resolve()}?mode=ro", uri=True)
+                try:
+                    pages = ocon.execute(
+                        "SELECT extracted_text FROM ocr_pages WHERE sha256 = ? ORDER BY page_num ASC LIMIT 3",
+                        (sha,),
+                    ).fetchall()
+                    joined = "\n".join((p[0] or "").strip() for p in pages if (p[0] or "").strip()).strip()
+                    if joined:
+                        return joined[:3500]
+                finally:
+                    ocon.close()
+            except Exception:
+                pass
+        if existing:
+            return existing
+        fpath = Path(str(row_dict.get("current_path") or ""))
+        if fpath.suffix.lower() in {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml"} and fpath.exists():
+            try:
+                return fpath.read_text(encoding="utf-8", errors="ignore").strip()[:3500]
+            except Exception:
+                pass
+        return ""
+
+    @router.get("/archive/metadata")
+    async def list_archive_metadata_route(
+        request: Request,
+        q: str = "",
+        owner_scope: str = "all",
+        sensitivity_tier: str = "all",
+        review_status: str = "unconfirmed",
+        limit: int = 25,
+        offset: int = 0,
+        user: str = Depends(require_user),
+    ):
+        """List and inspect archive catalog documents with extracted content for metadata review & confirmation."""
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        archive_db = data_dir / "archive_catalog.db"
+        ocr_db = data_dir / "private_ocr_index.db"
+        if not archive_db.exists():
+            return {"records": [], "total": 0, "confirmed_count": 0, "unconfirmed_count": 0}
+
+        safe_limit = max(1, min(int(limit or 25), 100))
+        safe_offset = max(0, int(offset or 0))
+
+        con = sqlite3.connect(str(archive_db))
+        con.row_factory = sqlite3.Row
+        try:
+            _ensure_archive_review_columns(con)
+            confirmed_count = con.execute(
+                "SELECT COUNT(*) FROM archive_files WHERE COALESCE(is_duplicate, 0) = 0 AND COALESCE(metadata_confirmed, 0) = 1"
+            ).fetchone()[0]
+            unconfirmed_count = con.execute(
+                "SELECT COUNT(*) FROM archive_files WHERE COALESCE(is_duplicate, 0) = 0 AND COALESCE(metadata_confirmed, 0) = 0"
+            ).fetchone()[0]
+
+            where = ["COALESCE(is_duplicate, 0) = 0"]
+            params: list = []
+            if owner_scope in {"personal", "business"}:
+                where.append("owner_scope = ?")
+                params.append(owner_scope)
+            if sensitivity_tier and sensitivity_tier != "all":
+                where.append("sensitivity_tier = ?")
+                params.append(sensitivity_tier)
+            if review_status == "confirmed":
+                where.append("COALESCE(metadata_confirmed, 0) = 1")
+            elif review_status == "unconfirmed":
+                where.append("COALESCE(metadata_confirmed, 0) = 0")
+            q_clean = (q or "").strip()
+            if q_clean:
+                like = f"%{q_clean}%"
+                where.append(
+                    "(current_path LIKE ? OR proposed_category LIKE ? OR snippet_preview LIKE ? OR user_notes LIKE ?)"
+                )
+                params.extend([like, like, like, like])
+
+            where_sql = " AND ".join(where)
+            total = con.execute(f"SELECT COUNT(*) FROM archive_files WHERE {where_sql}", params).fetchone()[0]
+            rows = con.execute(
+                f"""
+                SELECT id, sha256, size_bytes, ext, current_path, current_top_folder,
+                       proposed_category, owner_scope, sensitivity_tier, confidence,
+                       needs_ocr, snippet_preview,
+                       COALESCE(metadata_confirmed, 0) AS metadata_confirmed,
+                       COALESCE(confirmed_at, '') AS confirmed_at,
+                       COALESCE(confirmed_by, '') AS confirmed_by,
+                       COALESCE(user_notes, '') AS user_notes
+                FROM archive_files
+                WHERE {where_sql}
+                ORDER BY COALESCE(metadata_confirmed, 0) ASC, confidence ASC, id ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+        finally:
+            con.close()
+
+        records = []
+        for r in rows:
+            d = dict(r)
+            d["filename"] = Path(str(d.get("current_path") or "")).name
+            d["extracted_content"] = _hydrate_doc_content(d, ocr_db)
+            records.append(d)
+
+        return {
+            "success": True,
+            "total": total,
+            "confirmed_count": confirmed_count,
+            "unconfirmed_count": unconfirmed_count,
+            "records": records,
+        }
+
+    @router.post("/archive/metadata/update")
+    async def update_archive_metadata_route(
+        request: Request,
+        body: ArchiveMetadataUpdateRequest,
+        user: str = Depends(require_user),
+    ):
+        """Edit and confirm document metadata in archive_catalog.db and drive_inventory.db."""
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        from datetime import datetime, timezone
+
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        archive_db = data_dir / "archive_catalog.db"
+        inventory_db = data_dir / "drive_inventory.db"
+        if not archive_db.exists():
+            raise HTTPException(404, "Archive catalog database not found.")
+
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        reviewer = user or "admin"
+        confirmed_flag = 1 if body.confirmed else 0
+
+        con = sqlite3.connect(str(archive_db))
+        con.row_factory = sqlite3.Row
+        try:
+            _ensure_archive_review_columns(con)
+            existing = con.execute(
+                "SELECT id, sha256, current_path, proposed_category FROM archive_files WHERE id = ?",
+                (body.record_id,),
+            ).fetchone()
+            if not existing:
+                raise HTTPException(404, f"Archive record id={body.record_id} not found.")
+
+            new_cat = body.proposed_category.strip() or (existing["proposed_category"] or "uncategorized")
+            new_snippet = body.snippet_preview.strip()
+            new_notes = body.user_notes.strip()
+
+            con.execute(
+                """
+                UPDATE archive_files
+                SET proposed_category = ?,
+                    owner_scope = ?,
+                    sensitivity_tier = ?,
+                    snippet_preview = ?,
+                    user_notes = ?,
+                    confidence = CASE WHEN ? = 1 THEN 1.0 ELSE confidence END,
+                    metadata_confirmed = ?,
+                    confirmed_at = CASE WHEN ? = 1 THEN ? ELSE confirmed_at END,
+                    confirmed_by = CASE WHEN ? = 1 THEN ? ELSE confirmed_by END
+                WHERE id = ?
+                """,
+                (
+                    new_cat,
+                    body.owner_scope,
+                    body.sensitivity_tier,
+                    new_snippet,
+                    new_notes,
+                    confirmed_flag,
+                    confirmed_flag,
+                    confirmed_flag,
+                    now_iso,
+                    confirmed_flag,
+                    reviewer,
+                    body.record_id,
+                ),
+            )
+            con.commit()
+            sha = (existing["sha256"] or "").strip()
+        finally:
+            con.close()
+
+        inventory_updated = 0
+        if sha and inventory_db.exists():
+            icon = sqlite3.connect(str(inventory_db))
+            try:
+                cur = icon.execute(
+                    """
+                    UPDATE inventory_files
+                    SET catalog_category = ?,
+                        proposed_category = ?,
+                        catalog_owner_scope = ?,
+                        proposed_owner_scope = ?,
+                        sensitivity_tier = ?,
+                        snippet_preview = CASE WHEN length(?) > 0 THEN ? ELSE snippet_preview END,
+                        confidence = CASE WHEN ? = 1 THEN 1.0 ELSE confidence END
+                    WHERE sha256 = ?
+                    """,
+                    (
+                        new_cat,
+                        new_cat,
+                        body.owner_scope,
+                        body.owner_scope,
+                        body.sensitivity_tier,
+                        new_snippet,
+                        new_snippet,
+                        confirmed_flag,
+                        sha,
+                    ),
+                )
+                inventory_updated = cur.rowcount
+                icon.commit()
+            finally:
+                icon.close()
+
+        return {
+            "success": True,
+            "record_id": body.record_id,
+            "proposed_category": new_cat,
+            "owner_scope": body.owner_scope,
+            "sensitivity_tier": body.sensitivity_tier,
+            "metadata_confirmed": bool(confirmed_flag),
+            "confirmed_at": now_iso if confirmed_flag else "",
+            "confirmed_by": reviewer if confirmed_flag else "",
+            "inventory_rows_synced": inventory_updated,
+        }
 
     return router
