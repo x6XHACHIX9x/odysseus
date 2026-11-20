@@ -3676,6 +3676,73 @@ async def action_cookbook_serve(
     return f"Launched {repo_id} (session {sid})", True
 
 
+
+_ODYAI_STDOUT_LOCK = None
+
+async def _run_odyai_script_fn(mod_name: str, fn_name: str) -> tuple[str, int]:
+    global _ODYAI_STDOUT_LOCK
+    import asyncio, contextlib, importlib, io, sys
+    if _ODYAI_STDOUT_LOCK is None:
+        _ODYAI_STDOUT_LOCK = asyncio.Lock()
+    async with _ODYAI_STDOUT_LOCK:
+        def _invoke():
+            if "/app" not in sys.path:
+                sys.path.insert(0, "/app")
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, fn_name)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fn()
+            return buf.getvalue().strip(), int(rc or 0)
+        return await asyncio.to_thread(_invoke)
+
+
+async def action_odyai_ops_watch(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Run OdyAI Continuous Operations Watch in-process."""
+    try:
+        out, rc = await _run_odyai_script_fn("scripts.odyai_ops", "mode_watch")
+        if rc != 0:
+            return out or f"odyai_ops watch failed (rc={rc})", False
+        if out.startswith("WATCH OK:"):
+            raise TaskNoop(out)
+        return out or "WATCH OK", True
+    except (TaskNoop, TaskDeferred):
+        raise
+    except Exception as e:
+        logger.error(f"odyai_ops_watch action failed: {e}")
+        return str(e), False
+
+
+async def action_odyai_ops_briefing(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Run OdyAI Daily Operations Morning Briefing in-process."""
+    try:
+        out, rc = await _run_odyai_script_fn("scripts.odyai_ops", "mode_briefing")
+        if rc != 0:
+            return out or f"odyai_ops briefing failed (rc={rc})", False
+        return out or "Daily briefing generated (empty output).", True
+    except (TaskNoop, TaskDeferred):
+        raise
+    except Exception as e:
+        logger.error(f"odyai_ops_briefing action failed: {e}")
+        return str(e), False
+
+
+async def action_odyai_rag_maintenance(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Run OdyAI Supervised RAG Maintenance proposal check in-process."""
+    try:
+        out, rc = await _run_odyai_script_fn("scripts.odyai_maintenance", "mode_propose")
+        if rc != 0:
+            return out or f"odyai_maintenance propose failed (rc={rc})", False
+        if "RELAY PROGRESS & SUPERVISED APPROVAL CARD" not in out:
+            raise TaskNoop(out or "NO NEW RAG DELTA")
+        return out, True
+    except (TaskNoop, TaskDeferred):
+        raise
+    except Exception as e:
+        logger.error(f"odyai_rag_maintenance action failed: {e}")
+        return str(e), False
+
+
 BUILTIN_ACTIONS = {
     "tidy_sessions": action_tidy_sessions,
     "tidy_documents": action_tidy_documents,
@@ -3695,8 +3762,14 @@ BUILTIN_ACTIONS = {
     "run_local": action_run_local,
     "test_skills": action_test_skills,
     "audit_skills": action_audit_skills,
+    "odyai_ops_watch": "Run OdyAI hourly continuous operations watch and alert relay",
+    "odyai_ops_briefing": "Generate the OdyAI daily operations morning briefing card",
+    "odyai_rag_maintenance": "Scan allowlisted RAG intake for new files and stage a supervised approval card",
     "check_email_urgency": action_check_email_urgency,
     "cookbook_serve": action_cookbook_serve,
+    "odyai_ops_watch": action_odyai_ops_watch,
+    "odyai_ops_briefing": action_odyai_ops_briefing,
+    "odyai_rag_maintenance": action_odyai_rag_maintenance,
     # ping_notes removed from the registry — runs only inside `_note_pings_loop`.
 }
 
