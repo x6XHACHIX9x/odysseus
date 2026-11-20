@@ -61,7 +61,7 @@ class DocsService:
         auth_context: Optional[AuthContext] = None,
         domains: Iterable[str] = ("docs", "media"),
         owner_scopes: Iterable[str] = ("personal", "business"),
-        max_sensitivity: str = "restricted-pii",
+        max_sensitivity: str | None = None,
         suppress_restricted_pii: bool = True,
     ) -> List[DocChunk]:
         """
@@ -129,7 +129,7 @@ class DocsService:
         auth_context: AuthContext,
         domains: Iterable[str] = ("docs", "media"),
         owner_scopes: Iterable[str] = ("personal", "business"),
-        max_sensitivity: str = "restricted-pii",
+        max_sensitivity: str | None = None,
         top_k: int = 5,
         suppress_restricted_pii: bool = True,
         redact_sensitive: bool = True,
