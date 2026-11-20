@@ -64,7 +64,12 @@ CONTEXTUAL_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?i)\b(ac+ount\s*(?:number|#|no\.?)?|acc[o0]unt\s*(?:number|#|no\.?)?|acct\s*(?:number|#|no\.?)?|routing\s*(?:number|#|no\.?)?|ssn|social\s*security)"
         r"\s*[:=#-]?\s*[A-Z0-9-]{4,20}"
     ),
+    re.compile(
+        r"(?i)\b(ein|fein|employer\s*identification(?:\s*number)?|tax\s*id(?:\s*number)?)"
+        r"\s*[:=#-]?\s*\d{2}-?\d{7}\b"
+    ),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    re.compile(r"\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
 )
 
@@ -222,7 +227,7 @@ def _authorize_request(
     *,
     requested_domains: Iterable[str],
     requested_owner_scopes: Iterable[str],
-    max_sensitivity: str,
+    max_sensitivity: str | None = None,
     expected_workstation_owner: str | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Enforce domain, owner_scope, and sensitivity_tier permissions before querying."""
@@ -250,7 +255,7 @@ def _authorize_request(
         if f"{os_name}:read" not in auth.scopes:
             raise PermissionError(f"Caller lacks required scope '{os_name}:read'.")
 
-    if max_sensitivity not in SENSITIVITY_ORDER:
+    if max_sensitivity is not None and max_sensitivity not in SENSITIVITY_ORDER:
         raise ValueError(f"Unsupported sensitivity_tier: {max_sensitivity!r}")
 
     # Determine highest sensitivity tier allowed by caller's scopes
@@ -262,8 +267,13 @@ def _authorize_request(
     elif "tier:personal-private" in auth.scopes:
         caller_max_rank = 3
 
-    requested_rank = SENSITIVITY_ORDER[max_sensitivity]
-    effective_rank = min(caller_max_rank, requested_rank)
+    if max_sensitivity is None:
+        effective_rank = caller_max_rank
+    else:
+        requested_rank = SENSITIVITY_ORDER[max_sensitivity]
+        if requested_rank > caller_max_rank:
+            raise PermissionError(f"Caller lacks required scope for sensitivity tier '{max_sensitivity}'.")
+        effective_rank = requested_rank
     allowed_tiers = tuple(
         tier for tier, rank in SENSITIVITY_ORDER.items() if rank <= effective_rank
     )
@@ -310,11 +320,37 @@ def sanitize_snippet(
     return cleaned, was_redacted
 
 
-def _sanitize_fts_query(raw_query: str) -> str:
+FTS_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "could", "did",
+    "do", "does", "find", "for", "from", "get", "had", "has", "have", "how",
+    "i", "in", "is", "it", "its", "llc", "me", "my", "of", "on", "or", "our",
+    "please", "search", "show", "tell", "that", "the", "their", "them", "there",
+    "these", "this", "those", "to", "us", "was", "we", "were", "what", "when",
+    "where", "which", "who", "why", "will", "with", "would", "you", "your",
+})
+
+
+def _build_fts_queries(raw_query: str) -> tuple[str, str | None]:
     tokens = re.findall(r"[A-Za-z0-9_'-]+", raw_query or "")
     if not tokens:
         raise ValueError("Search query must contain at least one searchable term.")
-    return " ".join(f'"{tok}"' for tok in tokens)
+    meaningful = [t for t in tokens if t.lower() not in FTS_STOPWORDS] or tokens
+    # Deduplicate preserving order (case-insensitive)
+    seen: set[str] = set()
+    unique_tokens: list[str] = []
+    for tok in meaningful:
+        key = tok.lower()
+        if key not in seen:
+            seen.add(key)
+            unique_tokens.append(tok)
+    and_expr = " ".join(f'"{tok}"' for tok in unique_tokens)
+    or_expr = " OR ".join(f'"{tok}"' for tok in unique_tokens) if len(unique_tokens) > 1 else None
+    return and_expr, or_expr
+
+
+def _sanitize_fts_query(raw_query: str) -> str:
+    and_expr, _ = _build_fts_queries(raw_query)
+    return and_expr
 
 
 def _lookup_inventory_provenance(
@@ -516,7 +552,7 @@ def search_local_intelligence(
     auth: AuthContext,
     domains: Iterable[str] = ("docs", "media"),
     owner_scopes: Iterable[str] = ("personal", "business"),
-    max_sensitivity: str = "restricted-pii",
+    max_sensitivity: str | None = None,
     limit: int = 10,
     rrf_k: int = 60,
     suppress_restricted_pii: bool = True,
@@ -537,32 +573,38 @@ def search_local_intelligence(
         max_sensitivity=max_sensitivity,
         expected_workstation_owner=expected_workstation_owner,
     )
-    fts_query = _sanitize_fts_query(query)
+    and_query, or_query = _build_fts_queries(query)
     per_domain_limit = max(limit * 2, 20)
 
-    ranked_lists: list[list[dict[str, Any]]] = []
-    if "docs" in allowed_domains:
-        ranked_lists.append(
-            _search_ocr_docs(
-                fts_query,
-                ocr_db=ocr_db,
-                inventory_db=inventory_db,
-                owner_scopes=allowed_owner_scopes,
-                allowed_tiers=allowed_tiers,
-                fetch_limit=per_domain_limit,
-                suppress_restricted_pii=suppress_restricted_pii,
-                redact_sensitive=redact_sensitive,
+    def _run_domain_searches(fts_expr: str) -> list[list[dict[str, Any]]]:
+        lists: list[list[dict[str, Any]]] = []
+        if "docs" in allowed_domains:
+            lists.append(
+                _search_ocr_docs(
+                    fts_expr,
+                    ocr_db=ocr_db,
+                    inventory_db=inventory_db,
+                    owner_scopes=allowed_owner_scopes,
+                    allowed_tiers=allowed_tiers,
+                    fetch_limit=per_domain_limit,
+                    suppress_restricted_pii=suppress_restricted_pii,
+                    redact_sensitive=redact_sensitive,
+                )
             )
-        )
-    if "media" in allowed_domains:
-        ranked_lists.append(
-            _search_media_transcripts(
-                fts_query,
-                media_db=media_db,
-                fetch_limit=per_domain_limit,
-                redact_sensitive=redact_sensitive,
+        if "media" in allowed_domains:
+            lists.append(
+                _search_media_transcripts(
+                    fts_expr,
+                    media_db=media_db,
+                    fetch_limit=per_domain_limit,
+                    redact_sensitive=redact_sensitive,
+                )
             )
-        )
+        return lists
+
+    ranked_lists = _run_domain_searches(and_query)
+    if not any(ranked_lists) and or_query is not None:
+        ranked_lists = _run_domain_searches(or_query)
 
     results = fuse_rrf(ranked_lists, k=rrf_k, limit=limit)
     return {
