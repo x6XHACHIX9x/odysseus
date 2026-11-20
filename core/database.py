@@ -145,10 +145,10 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA busy_timeout=30000")
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.OperationalError:
-            cursor.execute("PRAGMA journal_mode=TRUNCATE")
+        # TRUNCATE avoids -shm mmap cache desync on Docker Desktop bind mounts
+        # (virtiofs/9P) while keeping atomic rollback journals without reallocating.
+        cursor.execute("PRAGMA journal_mode=TRUNCATE")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 
