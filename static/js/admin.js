@@ -4684,22 +4684,25 @@ export default adminModule;
 // odyaiSystemMountHook: mount OdyAI Federated Archive Search & Draft Queue directly above Logs in Settings -> System
 (() => {
   const mountInSystem = () => {
-    if (document.getElementById('adm-odyaiSystemCard')) return;
-    const logsNode = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span'))
-      .find(n => n.children.length === 0 && n.textContent.trim() === 'Logs');
-    if (!logsNode) return;
-    let card = logsNode.parentElement;
-    while (card && card.parentElement && card.parentElement !== document.body) {
-      const style = window.getComputedStyle(card);
-      if (style.borderStyle && style.borderStyle !== 'none' && parseFloat(style.borderWidth) > 0) break;
-      card = card.parentElement;
-    }
-    const host = card && card.parentElement ? card.parentElement : null;
-    if (!host) return;
-
-    const wrap = document.createElement('div');
-    wrap.id = 'adm-odyaiSystemCard';
-    wrap.style.cssText = 'margin-bottom:16px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated, var(--bg));';
+    let wrap = document.getElementById('adm-odyaiSystemCard');
+    if (wrap && wrap.dataset.hydrated === '1') return;
+    if (!wrap) {
+      const logsNode = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span'))
+        .find(n => n.textContent && n.textContent.trim().endsWith('Logs') && n.textContent.trim().length <= 12);
+      if (!logsNode) return;
+      let card = logsNode.parentElement;
+      while (card && card.parentElement && card.parentElement !== document.body) {
+        const style = window.getComputedStyle(card);
+        if (style.borderStyle && style.borderStyle !== 'none' && parseFloat(style.borderWidth) > 0) break;
+        card = card.parentElement;
+      }
+      const host = card && card.parentElement ? card.parentElement : null;
+      if (!host) return;
+      wrap = document.createElement('div');
+      wrap.id = 'adm-odyaiSystemCard';
+      wrap.style.cssText = 'margin-bottom:16px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated, var(--bg));';
+      }
+    wrap.dataset.hydrated = '1';
     wrap.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:var(--accent, var(--fg));margin-bottom:8px;">OdyAI Federated Archive Search</div>
       <div style="display:flex;gap:8px;margin-bottom:8px;">
