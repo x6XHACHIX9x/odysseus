@@ -3406,6 +3406,66 @@ function initRag() {
     const runArchiveSearch = async () => {
       const q = el('adm-odyaiQueryInput').value.trim();
       const resBox = el('adm-odyaiResults');
+    let draftQueueBox = resBox && resBox.parentElement ? resBox.parentElement.querySelector('#odyai-draft-queue-box') : null;
+    const loadDraftQueue = async () => {
+      if (!draftQueueBox) return;
+      try {
+        const qRes = await fetch('/api/personal/archive/media-drafts', { credentials: 'same-origin' });
+        const qData = await qRes.json();
+        const drafts = Array.isArray(qData.drafts) ? qData.drafts : [];
+        if (!drafts.length) {
+          draftQueueBox.innerHTML = '<div class="admin-rag-item-meta">No publishing drafts awaiting approval.</div>';
+          return;
+        }
+        draftQueueBox.innerHTML = drafts.map(d => {
+          const titleHint = Array.isArray(d.proposed_titles) && d.proposed_titles[0] ? d.proposed_titles[0] : (d.filename || d.draft_id);
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;">
+              <div style="min-width:0;">
+                <div style="font-size:11px;font-weight:600;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(titleHint)}</div>
+                <div class="admin-rag-item-meta">${esc(d.draft_id)} &bull; ${esc(d.filename || '')}</div>
+              </div>
+              <div style="display:flex;gap:5px;flex-shrink:0;">
+                <button type="button" class="admin-btn-primary" style="font-size:10px;padding:3px 8px;" data-odyai-decide="${esc(d.draft_id)}" data-decision="approved">Approve</button>
+                <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;" data-odyai-decide="${esc(d.draft_id)}" data-decision="dismissed">Dismiss</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+        draftQueueBox.querySelectorAll('[data-odyai-decide]').forEach(dbtn => {
+          dbtn.addEventListener('click', async () => {
+            const did = dbtn.dataset.odyaiDecide;
+            const decision = dbtn.dataset.decision;
+            dbtn.disabled = true;
+            await fetch(`/api/personal/archive/media-drafts/${encodeURIComponent(did)}/decision`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ decision }),
+            });
+            loadDraftQueue();
+          });
+        });
+      } catch (_) {
+        if (draftQueueBox) draftQueueBox.innerHTML = '<div class="admin-rag-item-meta">Unable to load draft queue.</div>';
+      }
+    };
+    if (!draftQueueBox && resBox && resBox.parentElement) {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid var(--border);';
+      wrap.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:11px;font-weight:600;color:var(--fg);">Creator Publishing Drafts (Awaiting Approval)</span>
+          <button type="button" id="odyai-refresh-drafts-btn" class="admin-btn-secondary" style="font-size:10px;padding:2px 8px;">Refresh Queue</button>
+        </div>
+        <div id="odyai-draft-queue-box" style="display:flex;flex-direction:column;gap:5px;"></div>
+      `;
+      resBox.insertAdjacentElement('afterend', wrap);
+      draftQueueBox = wrap.querySelector('#odyai-draft-queue-box');
+      const rBtn = wrap.querySelector('#odyai-refresh-drafts-btn');
+      if (rBtn) rBtn.addEventListener('click', loadDraftQueue);
+      loadDraftQueue();
+    }
       if (!q) return;
       const domVal = el('adm-odyaiDomainSel').value;
       const scopeVal = el('adm-odyaiScopeSel').value;
@@ -3483,6 +3543,7 @@ function initRag() {
               if (dRes.ok && dData.success) {
                 btn.textContent = 'Draft Created';
                 if (statusSpan) statusSpan.textContent = `${dData.draft_id} (${dData.status})`;
+                if (typeof loadDraftQueue === 'function') loadDraftQueue();
               } else {
                 btn.disabled = false;
                 btn.textContent = 'Generate Publishing Draft';

@@ -258,3 +258,58 @@ def test_media_draft_endpoint_requires_auth_and_generates_human_approved_draft(t
     j_data = json.loads(Path(body["draft_json_path"]).read_text(encoding="utf-8"))
     assert j_data["matched_highlight"]["start_ts"] == "00:01:12"
     assert j_data["auto_upload_blocked"] is True
+
+
+def test_media_draft_list_and_decision_endpoints(tmp_path, monkeypatch) -> None:
+    import json
+    import sqlite3
+    from pathlib import Path
+    import scripts.stream_pipeline as sp
+
+    fake_db = tmp_path / "stream_media_catalog.db"
+    draft_json = tmp_path / "draft_m9_9_test.json"
+    draft_json.write_text(
+        json.dumps({"draft_id": "draft_m9_9_test", "proposed_titles": ["Test Cut"], "auto_upload_blocked": True}),
+        encoding="utf-8",
+    )
+
+    con = sqlite3.connect(str(fake_db))
+    con.executescript(
+        f"""
+        CREATE TABLE media_items (id INTEGER PRIMARY KEY, filename TEXT);
+        CREATE TABLE publishing_drafts (
+            draft_id TEXT PRIMARY KEY,
+            media_id INTEGER,
+            created_at TEXT,
+            status TEXT,
+            draft_md_path TEXT,
+            draft_json_path TEXT
+        );
+        INSERT INTO media_items (id, filename) VALUES (9, 'clip_09.mp4');
+        INSERT INTO publishing_drafts (draft_id, media_id, created_at, status, draft_md_path, draft_json_path)
+        VALUES ('draft_m9_9_test', 9, '2026-11-20T00:00:00+00:00', 'awaiting_human_approval', '', '{draft_json.as_posix()}');
+        """
+    )
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(sp, "STREAM_DB", fake_db)
+    client = _build_test_client(_StubAuthManager())
+
+    r_list = client.get("/api/personal/archive/media-drafts", headers={"x-test-user": "hachi"})
+    assert r_list.status_code == 200
+    assert len(r_list.json()["drafts"]) == 1
+    assert r_list.json()["drafts"][0]["draft_id"] == "draft_m9_9_test"
+
+    r_dec = client.post(
+        "/api/personal/archive/media-drafts/draft_m9_9_test/decision",
+        headers={"x-test-user": "hachi"},
+        json={"decision": "approved"},
+    )
+    assert r_dec.status_code == 200
+    assert r_dec.json()["status"] == "approved"
+    assert r_dec.json()["auto_upload_blocked"] is True
+
+    updated = json.loads(draft_json.read_text(encoding="utf-8"))
+    assert updated["status"] == "approved"
+    assert updated["auto_upload_blocked"] is True
