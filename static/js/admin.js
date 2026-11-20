@@ -4683,31 +4683,16 @@ export default adminModule;
 
 // odyaiSystemMountHook: mount OdyAI Federated Archive Search & Draft Queue directly above Logs in Settings -> System
 (() => {
-  const mountInSystem = () => {
-    let wrap = document.getElementById('adm-odyaiSystemCard');
-    if (wrap && wrap.dataset.hydrated === '1') return;
-    if (!wrap) {
-      const logsNode = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span'))
-        .find(n => n.textContent && n.textContent.trim().endsWith('Logs') && n.textContent.trim().length <= 12);
-      if (!logsNode) return;
-      let card = logsNode.parentElement;
-      while (card && card.parentElement && card.parentElement !== document.body) {
-        const style = window.getComputedStyle(card);
-        if (style.borderStyle && style.borderStyle !== 'none' && parseFloat(style.borderWidth) > 0) break;
-        card = card.parentElement;
-      }
-      const host = card && card.parentElement ? card.parentElement : null;
-      if (!host) return;
-      wrap = document.createElement('div');
-      wrap.id = 'adm-odyaiSystemCard';
-      wrap.style.cssText = 'margin-bottom:16px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated, var(--bg));';
-      }
-    wrap.dataset.hydrated = '1';
+  const escHtml = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  const ensureCardMarkup = () => {
+    const wrap = document.getElementById('adm-odyaiSystemCard');
+    if (!wrap || wrap.querySelector('#sys-odyaiSearchBtn')) return Boolean(wrap);
     wrap.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:var(--accent, var(--fg));margin-bottom:8px;">OdyAI Federated Archive Search</div>
       <div style="display:flex;gap:8px;margin-bottom:8px;">
         <input type="text" id="sys-odyaiQueryInput" placeholder="Search personal docs, We All Shine LLC, or DJI transcripts..." style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:12px;" />
-        <button type="button" id="sys-odyaiSearchBtn" class="admin-btn-primary" style="padding:6px 14px;font-size:12px;">Search</button>
+        <button type="button" id="sys-odyaiSearchBtn" class="admin-btn-primary" style="padding:6px 14px;font-size:12px;cursor:pointer;">Search</button>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:11px;margin-bottom:8px;color:var(--fg);">
         <label style="display:inline-flex;align-items:center;gap:4px;">Domain:
@@ -4732,152 +4717,195 @@ export default adminModule;
       <div style="padding-top:10px;border-top:1px solid var(--border);">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
           <span style="font-size:12px;font-weight:600;color:var(--fg);">Creator Publishing Drafts (Awaiting Approval)</span>
-          <button type="button" id="sys-odyaiRefreshDraftsBtn" class="admin-btn-secondary" style="font-size:11px;padding:3px 9px;">Refresh Queue</button>
+          <button type="button" id="sys-odyaiRefreshDraftsBtn" class="admin-btn-secondary" style="font-size:11px;padding:3px 9px;cursor:pointer;">Refresh Queue</button>
         </div>
         <div id="sys-odyaiDraftQueue" style="display:flex;flex-direction:column;gap:6px;"></div>
       </div>
     `;
-    host.insertBefore(wrap, card);
-
-    const escHtml = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const qInput = wrap.querySelector('#sys-odyaiQueryInput');
-    const sBtn = wrap.querySelector('#sys-odyaiSearchBtn');
-    const resBox = wrap.querySelector('#sys-odyaiResults');
-    const qBox = wrap.querySelector('#sys-odyaiDraftQueue');
-
-    const loadQueue = async () => {
-      try {
-        const r = await fetch('/api/personal/archive/media-drafts', { credentials: 'same-origin' });
-        const d = await r.json();
-        const drafts = Array.isArray(d.drafts) ? d.drafts : [];
-        if (!drafts.length) {
-          qBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">No publishing drafts awaiting approval.</div>';
-          return;
-        }
-        qBox.innerHTML = drafts.map(item => {
-          const title = Array.isArray(item.proposed_titles) && item.proposed_titles[0] ? item.proposed_titles[0] : (item.filename || item.draft_id);
-          return `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;">
-              <div style="min-width:0;">
-                <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(title)}</div>
-                <div style="font-size:10px;opacity:0.75;">${escHtml(item.draft_id)} &bull; ${escHtml(item.filename || '')}</div>
-              </div>
-              <div style="display:flex;gap:5px;flex-shrink:0;">
-                <button type="button" class="admin-btn-primary" style="font-size:10px;padding:3px 8px;" data-sys-decide="${escHtml(item.draft_id)}" data-decision="approved">Approve</button>
-                <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;" data-sys-decide="${escHtml(item.draft_id)}" data-decision="dismissed">Dismiss</button>
-              </div>
-            </div>`;
-        }).join('');
-        qBox.querySelectorAll('[data-sys-decide]').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            await fetch(`/api/personal/archive/media-drafts/${encodeURIComponent(btn.dataset.sysDecide)}/decision`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'same-origin',
-              body: JSON.stringify({ decision: btn.dataset.decision }),
-            });
-            loadQueue();
-          });
-        });
-      } catch (err) {
-        qBox.innerHTML = `<div style="font-size:11px;opacity:0.7;">Unable to load draft queue (${escHtml(err.message)}).</div>`;
-      }
-    };
-
-    const runSearch = async () => {
-      const query = qInput.value.trim();
-      if (!query) return;
-      sBtn.disabled = true;
-      sBtn.textContent = 'Searching...';
-      try {
-        const domVal = wrap.querySelector('#sys-odyaiDomainSel').value;
-        const scopeVal = wrap.querySelector('#sys-odyaiScopeSel').value;
-        const r = await fetch('/api/personal/archive/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({
-            query,
-            domains: domVal === 'all' ? ['docs', 'media'] : [domVal],
-            owner_scopes: scopeVal === 'all' ? ['personal', 'business'] : [scopeVal],
-            top_k: 8,
-            gateway_only: wrap.querySelector('#sys-odyaiGatewayChk').checked,
-          }),
-        });
-        const data = await r.json();
-        if (!r.ok) {
-          resBox.innerHTML = `<div style="color:var(--red);font-size:11px;">${escHtml(data.detail || 'Search failed')}</div>`;
-          return;
-        }
-        const items = data.results || [];
-        if (!items.length) {
-          resBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">No matching archive records found.</div>';
-          return;
-        }
-        resBox.innerHTML = items.map(it => {
-          const loc = it.location || {};
-          const locTxt = loc.start_ts ? `${escHtml(loc.start_ts)}-${escHtml(loc.end_ts || '')}` : (loc.page ? `p. ${escHtml(String(loc.page))}` : '');
-          return `
-            <div style="padding:8px;border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;gap:4px;">
-              <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
-                <strong>${escHtml(it.filename || 'unknown')}</strong>
-                <span style="opacity:0.75;">[${escHtml(it.owner_scope || 'personal')} / ${escHtml(it.domain || 'docs')}${locTxt ? ' ? ' + locTxt : ''}]</span>
-                <span style="opacity:0.65;">score ${Number(it.score || 0).toFixed(3)}</span>
-              </div>
-              <div style="font-size:11px;opacity:0.85;white-space:pre-wrap;">${escHtml((it.text || '').slice(0, 260))}</div>
-              ${it.domain === 'media' && it.media_id ? `
-                <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
-                  <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;"
-                    data-sys-draft-media="${escHtml(String(it.media_id))}"
-                    data-sys-start-ts="${escHtml(String(loc.start_ts || ''))}"
-                    data-sys-end-ts="${escHtml(String(loc.end_ts || ''))}"
-                    data-sys-quote="${escHtml((it.text || '').slice(0, 300))}">Generate Publishing Draft</button>
-                  <span style="font-size:10px;opacity:0.8;" data-sys-draft-status="${escHtml(String(it.media_id))}"></span>
-                </div>` : ''}
-            </div>`;
-        }).join('');
-        resBox.querySelectorAll('[data-sys-draft-media]').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            const mediaId = Number(btn.dataset.sysDraftMedia);
-            const st = resBox.querySelector(`[data-sys-draft-status="${mediaId}"]`);
-            btn.disabled = true;
-            btn.textContent = 'Generating...';
-            const dr = await fetch('/api/personal/archive/media-draft', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'same-origin',
-              body: JSON.stringify({
-                media_id: mediaId,
-                highlight_start_ts: btn.dataset.sysStartTs || '',
-                highlight_end_ts: btn.dataset.sysEndTs || '',
-                highlight_quote: btn.dataset.sysQuote || '',
-              }),
-            });
-            const dd = await dr.json();
-            if (dr.ok && dd.success) {
-              btn.textContent = 'Draft Created';
-              if (st) st.textContent = `${dd.draft_id} (${dd.status})`;
-              loadQueue();
-            } else {
-              btn.disabled = false;
-              btn.textContent = 'Generate Publishing Draft';
-              if (st) st.textContent = dd.detail || 'Draft failed';
-            }
-          });
-        });
-      } finally {
-        sBtn.disabled = false;
-        sBtn.textContent = 'Search';
-      }
-    };
-
-    sBtn.addEventListener('click', runSearch);
-    qInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
-    wrap.querySelector('#sys-odyaiRefreshDraftsBtn').addEventListener('click', loadQueue);
-    loadQueue();
+    return true;
   };
 
-  new MutationObserver(mountInSystem).observe(document.body, { childList: true, subtree: true });
-  setTimeout(mountInSystem, 400);
+  const loadQueue = async () => {
+    ensureCardMarkup();
+    const qBox = document.getElementById('sys-odyaiDraftQueue');
+    if (!qBox) return;
+    qBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">Loading drafts...</div>';
+    try {
+      const r = await fetch('/api/personal/archive/media-drafts', { credentials: 'same-origin' });
+      const d = await r.json();
+      if (!r.ok) {
+        qBox.innerHTML = `<div style="font-size:11px;color:var(--red);">${escHtml(d.detail || 'Error loading drafts')}</div>`;
+        return;
+      }
+      const drafts = Array.isArray(d.drafts) ? d.drafts : [];
+      if (!drafts.length) {
+        qBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">No publishing drafts awaiting approval.</div>';
+        return;
+      }
+      qBox.innerHTML = drafts.map(item => {
+        const title = Array.isArray(item.proposed_titles) && item.proposed_titles[0] ? item.proposed_titles[0] : (item.filename || item.draft_id);
+        return `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;">
+            <div style="min-width:0;">
+              <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(title)}</div>
+              <div style="font-size:10px;opacity:0.75;">${escHtml(item.draft_id)} &bull; ${escHtml(item.filename || '')}</div>
+            </div>
+            <div style="display:flex;gap:5px;flex-shrink:0;">
+              <button type="button" class="admin-btn-primary" style="font-size:10px;padding:3px 8px;cursor:pointer;" data-sys-decide="${escHtml(item.draft_id)}" data-decision="approved">Approve</button>
+              <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;cursor:pointer;" data-sys-decide="${escHtml(item.draft_id)}" data-decision="dismissed">Dismiss</button>
+            </div>
+          </div>`;
+      }).join('');
+    } catch (err) {
+      qBox.innerHTML = `<div style="font-size:11px;color:var(--red);">Unable to load draft queue (${escHtml(err.message)}).</div>`;
+    }
+  };
+
+  const runSearch = async () => {
+    ensureCardMarkup();
+    const qInput = document.getElementById('sys-odyaiQueryInput');
+    const sBtn = document.getElementById('sys-odyaiSearchBtn');
+    const resBox = document.getElementById('sys-odyaiResults');
+    if (!qInput || !resBox) return;
+    const query = qInput.value.trim();
+    if (!query) {
+      resBox.innerHTML = '<div style="font-size:11px;opacity:0.75;">Enter a search term above (for example: We All Shine, DJI, invoice, or contract).</div>';
+      return;
+    }
+    if (sBtn) { sBtn.disabled = true; sBtn.textContent = 'Searching...'; }
+    resBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">Searching archive...</div>';
+    try {
+      const domVal = (document.getElementById('sys-odyaiDomainSel') || {}).value || 'all';
+      const scopeVal = (document.getElementById('sys-odyaiScopeSel') || {}).value || 'all';
+      const gwChk = Boolean((document.getElementById('sys-odyaiGatewayChk') || {}).checked);
+      const r = await fetch('/api/personal/archive/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          query,
+          domains: domVal === 'all' ? ['docs', 'media'] : [domVal],
+          owner_scopes: scopeVal === 'all' ? ['personal', 'business'] : [scopeVal],
+          top_k: 8,
+          gateway_only: gwChk,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        resBox.innerHTML = `<div style="color:var(--red);font-size:11px;">${escHtml(data.detail || 'Search failed')}</div>`;
+        return;
+      }
+      const items = data.results || [];
+      if (!items.length) {
+        resBox.innerHTML = '<div style="font-size:11px;opacity:0.7;">No matching archive records found.</div>';
+        return;
+      }
+      resBox.innerHTML = items.map(it => {
+        const loc = it.location || {};
+        const locTxt = loc.start_ts ? `${escHtml(loc.start_ts)}-${escHtml(loc.end_ts || '')}` : (loc.page ? `p. ${escHtml(String(loc.page))}` : '');
+        return `
+          <div style="padding:8px;border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;gap:4px;">
+            <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
+              <strong>${escHtml(it.filename || 'unknown')}</strong>
+              <span style="opacity:0.75;">[${escHtml(it.owner_scope || 'personal')} / ${escHtml(it.domain || 'docs')}${locTxt ? ' ? ' + locTxt : ''}]</span>
+              <span style="opacity:0.65;">score ${Number(it.score || 0).toFixed(3)}</span>
+            </div>
+            <div style="font-size:11px;opacity:0.85;white-space:pre-wrap;">${escHtml((it.text || '').slice(0, 260))}</div>
+            ${it.domain === 'media' && it.media_id ? `
+              <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+                <button type="button" class="admin-btn-secondary" style="font-size:10px;padding:3px 8px;cursor:pointer;"
+                  data-sys-draft-media="${escHtml(String(it.media_id))}"
+                  data-sys-start-ts="${escHtml(String(loc.start_ts || ''))}"
+                  data-sys-end-ts="${escHtml(String(loc.end_ts || ''))}"
+                  data-sys-quote="${escHtml((it.text || '').slice(0, 300))}">Generate Publishing Draft</button>
+                <span style="font-size:10px;opacity:0.8;" data-sys-draft-status="${escHtml(String(it.media_id))}"></span>
+              </div>` : ''}
+          </div>`;
+      }).join('');
+    } catch (err) {
+      resBox.innerHTML = `<div style="color:var(--red);font-size:11px;">Search error: ${escHtml(err.message)}</div>`;
+    } finally {
+      if (sBtn) { sBtn.disabled = false; sBtn.textContent = 'Search'; }
+    }
+  };
+
+  document.addEventListener('click', async (e) => {
+    const target = e.target;
+    if (!target || !target.closest) return;
+
+    if (target.closest('#sys-odyaiSearchBtn')) {
+      e.preventDefault();
+      e.stopPropagation();
+      await runSearch();
+      return;
+    }
+
+    if (target.closest('#sys-odyaiRefreshDraftsBtn')) {
+      e.preventDefault();
+      e.stopPropagation();
+      await loadQueue();
+      return;
+    }
+
+    const decideBtn = target.closest('[data-sys-decide]');
+    if (decideBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      decideBtn.disabled = true;
+      await fetch(`/api/personal/archive/media-drafts/${encodeURIComponent(decideBtn.dataset.sysDecide)}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ decision: decideBtn.dataset.decision }),
+      });
+      await loadQueue();
+      return;
+    }
+
+    const draftBtn = target.closest('[data-sys-draft-media]');
+    if (draftBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const mediaId = Number(draftBtn.dataset.sysDraftMedia);
+      const st = document.querySelector(`[data-sys-draft-status="${mediaId}"]`);
+      draftBtn.disabled = true;
+      draftBtn.textContent = 'Generating...';
+      const dr = await fetch('/api/personal/archive/media-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          media_id: mediaId,
+          highlight_start_ts: draftBtn.dataset.sysStartTs || '',
+          highlight_end_ts: draftBtn.dataset.sysEndTs || '',
+          highlight_quote: draftBtn.dataset.sysQuote || '',
+        }),
+      });
+      const dd = await dr.json();
+      if (dr.ok && dd.success) {
+        draftBtn.textContent = 'Draft Created';
+        if (st) st.textContent = `${dd.draft_id} (${dd.status})`;
+        await loadQueue();
+      } else {
+        draftBtn.disabled = false;
+        draftBtn.textContent = 'Generate Publishing Draft';
+        if (st) st.textContent = dd.detail || 'Draft failed';
+      }
+      return;
+    }
+
+    if (target.textContent && target.textContent.trim() === 'System') {
+      setTimeout(() => { ensureCardMarkup(); loadQueue(); }, 150);
+    }
+  }, true);
+
+  document.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' && e.target && e.target.id === 'sys-odyaiQueryInput') {
+      e.preventDefault();
+      e.stopPropagation();
+      await runSearch();
+    }
+  }, true);
+
+  setTimeout(() => { if (ensureCardMarkup()) loadQueue(); }, 500);
 })();
