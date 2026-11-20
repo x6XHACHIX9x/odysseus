@@ -271,7 +271,7 @@ def main() -> int:
 
     rc = _run_step("2/4 Sync & Process Private/Restricted OCR Queue", [py, "scripts/private_ocr_indexer.py", "--mode", "sync-queue"])
     if rc == 0 and args.ocr_limit > 0:
-        _run_step(f"2b/4 Run RapidOCR Batch (limit={args.ocr_limit})", [py, "scripts/private_ocr_indexer.py", "--mode", "run", "--limit", str(args.ocr_limit)])
+        _run_step(f"2b/4 Run RapidOCR Batch (limit={args.ocr_limit})", [py, "scripts/private_ocr_indexer.py", "--mode", "run", "--limit", str(args.ocr_limit), *(["--force"] if args.force else [])])
 
     rc = _run_step("3/4 Scan Media & Stream Roots", [py, "scripts/stream_pipeline.py", "--mode", "scan"])
     if rc == 0 and args.media_limit > 0:
