@@ -577,6 +577,7 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
 
         import asyncio
         import json as _json
+        from pathlib import Path
         import sqlite3 as _sqlite3
         from scripts.stream_pipeline import DRAFT_DIR, STREAM_DB, cmd_draft_package
 

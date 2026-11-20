@@ -192,6 +192,7 @@ def test_archive_search_grants_admin_full_scopes_and_returns_redacted_hits(monke
 def test_media_draft_endpoint_requires_auth_and_generates_human_approved_draft(tmp_path, monkeypatch) -> None:
     import json
     import sqlite3
+    from pathlib import Path
     import scripts.stream_pipeline as sp
 
     fake_db = tmp_path / "stream_media_catalog.db"
