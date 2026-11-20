@@ -112,6 +112,7 @@ function hueDistance(a, b) {
 }
 
 function selectiveRangeWeight(name, hue, saturation, lightness) {
+  if (name === 'whites') return Math.max(0, Math.min(1, (lightness - 0.5) / 0.45));
   if (name === 'blacks') return Math.max(0, Math.min(1, (0.55 - lightness) / 0.45));
   if (name === 'neutrals') return Math.max(0, Math.min(1, (1 - saturation) * (1 - Math.abs(lightness - .5) * 1.5)));
   const centers = { reds: 0, yellows: 1 / 6, greens: 1 / 3, cyans: .5, blues: 2 / 3, magentas: 5 / 6 };
@@ -161,12 +162,37 @@ export function applyAdjustment(srcCanvas, adj) {
 
   if (adj.type === 'white-balance') {
     const p = adj.params || {};
-    const temperature = finiteOr(p.temperature, 0) / 100;
-    const tint = finiteOr(p.tint, 0) / 100;
+    const temperature = Math.max(-1, Math.min(1, finiteOr(p.temperature, 0) / 100));
+    const tint = Math.max(-1, Math.min(1, finiteOr(p.tint, 0) / 100));
+    if (temperature === 0 && tint === 0) {
+      octx.putImageData(img, 0, 0);
+      return out;
+    }
+    // Linear-light chromatic adaptation with luminance preservation so warming
+    // or cooling shifts chromaticity without artificially darkening/brightening.
+    const rGain = Math.pow(2, temperature * 0.42 + tint * 0.14);
+    const gGain = Math.pow(2, -tint * 0.24);
+    const bGain = Math.pow(2, -temperature * 0.42 + tint * 0.14);
+    const toLinear = v => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+    const toSrgb = v => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(Math.max(0, v), 1 / 2.4) - 0.055);
     for (let i = 0; i < d.length; i += 4) {
-      d[i] = clampByte(d[i] * (1 + temperature * .28 + tint * .09));
-      d[i + 1] = clampByte(d[i + 1] * (1 - tint * .18));
-      d[i + 2] = clampByte(d[i + 2] * (1 - temperature * .28 + tint * .09));
+      const lr = toLinear(d[i] / 255);
+      const lg = toLinear(d[i + 1] / 255);
+      const lb = toLinear(d[i + 2] / 255);
+      const srcY = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+      let ar = lr * rGain;
+      let ag = lg * gGain;
+      let ab = lb * bGain;
+      const dstY = 0.2126 * ar + 0.7152 * ag + 0.0722 * ab;
+      if (dstY > 1e-6 && srcY > 0) {
+        const lumScale = srcY / dstY;
+        ar *= lumScale;
+        ag *= lumScale;
+        ab *= lumScale;
+      }
+      d[i] = clampByte(toSrgb(ar) * 255);
+      d[i + 1] = clampByte(toSrgb(ag) * 255);
+      d[i + 2] = clampByte(toSrgb(ab) * 255);
     }
     octx.putImageData(img, 0, 0);
     return out;

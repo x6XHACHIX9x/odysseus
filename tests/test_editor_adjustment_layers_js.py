@@ -137,3 +137,49 @@ def test_adjustment_worker_reuses_shared_pixel_pass_and_returns_transferable_bit
     assert "transferToImageBitmap()" in worker
     assert "drawAdjustmentLayerAsync" in adjustment
     assert "new Worker(new URL('./adjustments-worker.js', import.meta.url)" in adjustment
+
+
+def test_white_balance_preserves_perceived_luminance_and_selective_whites_isolates_highlights():
+    source = textwrap.dedent(
+        f"""
+        import {{applyAdjustment}} from {json.dumps(PIXEL_MODULE)};
+        class FakeContext {{
+          constructor(canvas) {{ this.canvas=canvas; this.filter='none'; }}
+          drawImage(source) {{ this.canvas.pixels=new Uint8ClampedArray(source.pixels); }}
+          getImageData() {{ return {{data:new Uint8ClampedArray(this.canvas.pixels)}}; }}
+          putImageData(image) {{ this.canvas.pixels=new Uint8ClampedArray(image.data); }}
+        }}
+        class FakeCanvas {{
+          constructor(pixels=[0,0,0,0]) {{ this.width=1; this.height=1; this.pixels=new Uint8ClampedArray(pixels); this.ctx=new FakeContext(this); }}
+          getContext() {{ return this.ctx; }}
+        }}
+        globalThis.document={{createElement:()=>new FakeCanvas()}};
+        const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const gray = new FakeCanvas([140, 140, 140, 255]);
+        const warm = Array.from(applyAdjustment(gray, {{type:'white-balance',params:{{temperature:75,tint:10}}}}).pixels);
+        const cool = Array.from(applyAdjustment(gray, {{type:'white-balance',params:{{temperature:-75,tint:-10}}}}).pixels);
+
+        const whitePx = new FakeCanvas([240, 240, 240, 255]);
+        const redPx = new FakeCanvas([220, 20, 20, 255]);
+        const selSpec = {{type:'selective-color',params:{{ranges:{{whites:{{cyan:40,magenta:0,yellow:0,black:0}}}}}}}};
+        const whiteAfter = Array.from(applyAdjustment(whitePx, selSpec).pixels);
+        const redAfter = Array.from(applyAdjustment(redPx, selSpec).pixels);
+
+        console.log(JSON.stringify({{
+          grayLum: lum([140, 140, 140]),
+          warm,
+          warmLum: lum(warm),
+          cool,
+          coolLum: lum(cool),
+          whiteAfter,
+          redAfter,
+        }}));
+        """
+    )
+    res = run_node(source)
+    assert res["warm"][0] > res["warm"][2]
+    assert res["cool"][2] > res["cool"][0]
+    assert abs(res["warmLum"] - res["grayLum"]) < 2.0
+    assert abs(res["coolLum"] - res["grayLum"]) < 2.0
+    assert res["whiteAfter"][0] < 240
+    assert res["redAfter"] == [220, 20, 20, 255]

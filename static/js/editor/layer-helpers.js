@@ -86,7 +86,7 @@ export function defaultAdjParams(type) {
     case 'selective-color':     return {
       range: 'reds',
       ranges: Object.fromEntries(
-        ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'neutrals', 'blacks']
+        ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks']
           .map(name => [name, { cyan: 0, magenta: 0, yellow: 0, black: 0 }]),
       ),
     };

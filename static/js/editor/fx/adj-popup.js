@@ -740,7 +740,7 @@ export function createAdjPopupSystem({ composite, saveState, renderLayerPanel, g
       if (!p.range) p.range = 'reds';
       if (!p.ranges?.[p.range]) p.ranges = defaultAdjParams(type).ranges;
       const values = p.ranges[p.range];
-      const ranges = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'neutrals', 'blacks'];
+      const ranges = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'];
       body.innerHTML = `
         <label class="ge-adj-channel-field">Colors
           <select class="ge-adj-selective-range">

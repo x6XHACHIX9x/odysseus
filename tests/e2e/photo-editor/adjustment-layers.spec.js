@@ -361,3 +361,94 @@ test('retained Stroke uses layer alpha and persists its controls', async ({ page
   await reopenDraft(page, draftId);
   expect((await editorState(page)).layers.find(item => item.name === 'Edit').effects).toHaveLength(0);
 });
+
+
+test('flattened export and reopened project match pixel-for-pixel across adjustment families, groups, clipping, masks, and blend modes', async ({ page }) => {
+  await openBlankEditor(page, { width: 320, height: 220 }, 'Adjustment export vs reopen parity E2E');
+  await page.evaluate(async () => {
+    const { state } = await import('/static/js/editor/state.js');
+    const base = state.layers.find(item => item.id === state.activeLayerId);
+    const grad = base.ctx.createLinearGradient(0, 0, base.canvas.width, base.canvas.height);
+    grad.addColorStop(0, '#c83e4d');
+    grad.addColorStop(0.5, '#4c9f70');
+    grad.addColorStop(1, '#2d5fb8');
+    base.ctx.fillStyle = grad;
+    base.ctx.fillRect(0, 0, base.canvas.width, base.canvas.height);
+    window.galleryEditorComposite?.();
+  });
+
+  // Add a subject raster layer via UI and paint a bright highlight patch
+  await page.locator('#ge-add-layer').click();
+  await page.evaluate(async () => {
+    const { state } = await import('/static/js/editor/state.js');
+    const subject = state.layers.find(item => item.id === state.activeLayerId);
+    subject.name = 'Subject Patch';
+    subject.ctx.fillStyle = '#f2efe9';
+    subject.ctx.fillRect(40, 30, 180, 140);
+    window.galleryEditorComposite?.();
+  });
+
+  // Add a clipped Curves adjustment with screen blend mode & partial opacity
+  await addAdjustment(page, 'curves');
+  const curve = page.locator('.ge-curves-canvas');
+  const box = await curve.boundingBox();
+  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.25);
+  await page.locator('[data-adj-action="ok"]').click();
+
+  let current = await editorState(page);
+  const curvesId = current.layers.find(l => l.kind === 'adjustment').id;
+  await page.locator('.ge-layer-controls:visible .ge-layer-clip-btn').click();
+  await page.locator('.ge-layer-controls:visible .ge-true-mask-btn').click();
+  const curvesRow = page.locator(`.ge-layer-item[data-layer-id="${curvesId}"]`);
+  await curvesRow.locator('.ge-layer-opacity').fill('72');
+  await curvesRow.locator('.ge-layer-opacity').dispatchEvent('input');
+
+  // Add a White Balance adjustment and group it with the subject + curves layers
+  await addAdjustment(page, 'white-balance');
+  const wbTemp = page.locator('.ge-adj-row input[data-key="temperature"]');
+  await wbTemp.fill('55');
+  await wbTemp.dispatchEvent('input');
+  await page.locator('[data-adj-action="ok"]').click();
+
+  await page.evaluate(async () => {
+    const { state } = await import('/static/js/editor/state.js');
+    const { createGroupFromSelection } = await import('/static/js/editor/layer-groups.js');
+    const curves = state.layers.find(l => l.adjustment?.type === 'curves');
+    if (curves) curves.blendMode = 'screen';
+    const groupTargets = state.layers.filter(l => l.name !== 'Edit').map(l => l.id);
+    state.selectedLayerIds = groupTargets;
+    createGroupFromSelection(state, 'Grade Group');
+    window.galleryEditorComposite?.();
+  });
+
+  // Add a global Selective Color adjustment (targeting whites & reds) with multiply blend mode
+  await addAdjustment(page, 'selective-color');
+  await page.locator('.ge-adj-selective-range').selectOption('whites');
+  const cyanInput = page.locator('.ge-adj-row input[data-key="cyan"]');
+  await cyanInput.fill('30');
+  await cyanInput.dispatchEvent('input');
+  await page.locator('[data-adj-action="ok"]').click();
+
+  await page.evaluate(async () => {
+    const { state } = await import('/static/js/editor/state.js');
+    const sel = state.layers.find(l => l.adjustment?.type === 'selective-color');
+    if (sel) {
+      sel.blendMode = 'multiply';
+      sel.opacity = 0.55;
+    }
+    window.galleryEditorComposite?.();
+  });
+
+  const expectedPixels = await flattenedPixelDigest(page);
+  const exportedPng = await page.evaluate(async () => {
+    const editor = await import('/static/js/galleryEditor.js');
+    return editor.exportPNG();
+  });
+  expect(
+    await encodedImagePixelDigest(page, Buffer.from(exportedPng.split(',', 2)[1], 'base64'))
+  ).toEqual(expectedPixels);
+
+  const draftId = await waitForDraft(page);
+  await reopenDraft(page, draftId);
+  expect(await flattenedPixelDigest(page)).toEqual(expectedPixels);
+});

@@ -290,12 +290,12 @@ balance, selective color, gradients, and channel-aware controls.
 
 ### Acceptance criteria
 
-- [ ] Adjustment layers affect content below them and can be clipped or grouped.
-- [ ] Every adjustment has live preview, reset, visibility, opacity, mask, Apply, and Cancel behavior.
-- [ ] Levels includes histogram, input range, gamma, and output range.
-- [ ] Curves supports RGB and channel curves with editable points.
-- [ ] Color results match flattened export and project reopen.
-- [ ] Large previews are throttled or worker-backed and remain cancellable.
+- [x] Adjustment layers affect content below them and can be clipped or grouped.
+- [x] Every adjustment has live preview, reset, visibility, opacity, mask, Apply, and Cancel behavior.
+- [x] Levels includes histogram, input range, gamma, and output range.
+- [x] Curves supports RGB and channel curves with editable points.
+- [x] Color results match flattened export and project reopen.
+- [x] Large previews are throttled or worker-backed and remain cancellable.
 
 ---
 

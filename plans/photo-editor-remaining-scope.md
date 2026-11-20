@@ -10,7 +10,7 @@ shared direct-manipulation sessions, retained placed content, unified
 selections and masks, a reusable brush/retouch engine, and retained text and
 shape layers.
 
-Phase 10 is functionally advanced but not closed. First-class adjustment layers
+Phase 10 is complete (closed and verified across unit and Playwright E2E suites). First-class adjustment layers
 now support Levels, Curves, Exposure, White Balance, Brightness/Contrast,
 Hue/Saturation/Lightness, Color Balance, Selective Color, and Gradient Map.
 They participate in clipping, groups, masks, visibility, opacity, history, the

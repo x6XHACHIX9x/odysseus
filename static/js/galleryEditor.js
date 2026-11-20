@@ -7987,29 +7987,35 @@ function _autoMatchLastInpaintLayer() {
   const dg = clamp((outside.g - inside.g) * 0.55, -55, 55);
   const db = clamp((outside.b - inside.b) * 0.55, -55, 55);
   const dy = clamp((outside.y - inside.y) * 0.35, -35, 35);
-  if (!layer.adjLayers) layer.adjLayers = [];
-  layer.adjLayers = layer.adjLayers.filter(a => a.id !== 'auto-match-color' && a.id !== 'auto-match-light');
-  layer.adjLayers.push({
-    id: 'auto-match-light',
-    type: 'brightness-contrast',
-    params: {
-      brightness: clamp(1 + (dy / 255), 0.75, 1.25),
-      contrast: 1,
-    },
+  // Converge auto-match onto clipped first-class adjustment layers rather than
+  // adding new legacy per-raster adjLayers entries.
+  state.layers = state.layers.filter(
+    l => !(l.kind === 'adjustment' && l._autoMatchTargetId === layer.id)
+  );
+  const targetIdx = state.layers.findIndex(l => l.id === layer.id);
+  const insertAt = targetIdx >= 0 ? targetIdx : 0;
+  const lightAdj = createAdjustmentLayer('brightness-contrast', {
+    brightness: clamp(1 + (dy / 255), 0.75, 1.25),
+    contrast: 1,
+  }, {
+    name: 'Auto Match Light',
     opacity: 0.7,
-    visible: true,
+    clipped: true,
+    groupId: layer.groupId ?? null,
   });
-  layer.adjLayers.push({
-    id: 'auto-match-color',
-    type: 'color-balance',
-    params: {
-      shadows: { r: dr * 0.45, g: dg * 0.45, b: db * 0.45 },
-      midtones: { r: dr, g: dg, b: db },
-      highlights: { r: dr * 0.35, g: dg * 0.35, b: db * 0.35 },
-    },
+  lightAdj._autoMatchTargetId = layer.id;
+  const colorAdj = createAdjustmentLayer('color-balance', {
+    shadows: { r: dr * 0.45, g: dg * 0.45, b: db * 0.45 },
+    midtones: { r: dr, g: dg, b: db },
+    highlights: { r: dr * 0.35, g: dg * 0.35, b: db * 0.35 },
+  }, {
+    name: 'Auto Match Color',
     opacity: 0.75,
-    visible: true,
+    clipped: true,
+    groupId: layer.groupId ?? null,
   });
+  colorAdj._autoMatchTargetId = layer.id;
+  state.layers.splice(insertAt, 0, colorAdj, lightAdj);
   _saveState('Auto match inpaint color');
   composite();
   _renderLayerPanel();
