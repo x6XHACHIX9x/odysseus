@@ -334,12 +334,12 @@ current Odysseus palette, typography, restrained borders, and frosted surfaces.
 
 ### Acceptance criteria
 
-- [ ] Tool options appear in one predictable location and never duplicate popup state.
-- [ ] Panels remember size, collapsed state, and position per device class.
-- [ ] The properties inspector follows the active layer, mask, selection, or tool.
-- [ ] Command search exposes actions and shortcuts without adding toolbar clutter.
-- [ ] Switching documents preserves independent history, zoom, pan, and selection.
-- [ ] Mobile prioritizes canvas area while keeping all commands reachable.
+- [x] Tool options appear in one predictable location and never duplicate popup state.
+- [x] Panels remember size, collapsed state, and position per device class.
+- [x] The properties inspector follows the active layer, mask, selection, or tool.
+- [x] Command search exposes actions and shortcuts without adding toolbar clutter.
+- [x] Switching documents preserves independent history, zoom, pan, and selection.
+- [x] Mobile prioritizes canvas area while keeping all commands reachable.
 
 ---
 
