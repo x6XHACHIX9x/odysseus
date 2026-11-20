@@ -128,6 +128,10 @@ def rename_personal_upload_owner(
 
 
 
+class MediaDraftDecisionRequest(BaseModel):
+    decision: str = Field(..., pattern="^(approved|dismissed)$")
+
+
 class MediaDraftRequest(BaseModel):
     media_id: int = Field(..., ge=1)
     highlight_start_ts: str = Field(default="", max_length=32)
@@ -608,7 +612,7 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
                     SELECT draft_id, media_id, created_at, status, draft_md_path, draft_json_path
                     FROM publishing_drafts
                     WHERE media_id = ?
-                    ORDER BY id DESC LIMIT 1
+                    ORDER BY rowid DESC LIMIT 1
                     """,
                     (body.media_id,),
                 ).fetchone()
@@ -658,5 +662,111 @@ def setup_personal_routes(personal_docs_manager, rag_manager, rag_available):
             "draft_md_path": draft_info["draft_md_path"],
             "draft_json_path": draft_info["draft_json_path"],
         }
+
+
+    @router.get("/archive/media-drafts")
+    async def list_media_publishing_drafts_route(
+        request: Request,
+        user: str = Depends(require_user),
+    ):
+        """List M9 publishing drafts awaiting human approval."""
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        import json as _json
+        import sqlite3 as _sqlite3
+        from pathlib import Path
+        from scripts.stream_pipeline import STREAM_DB
+
+        if not STREAM_DB.exists():
+            return {"drafts": []}
+
+        con = _sqlite3.connect(f"file:{STREAM_DB.resolve()}?mode=ro", uri=True)
+        con.row_factory = _sqlite3.Row
+        try:
+            rows = con.execute(
+                """
+                SELECT d.draft_id, d.media_id, m.filename, d.created_at, d.status, d.draft_json_path
+                FROM publishing_drafts d
+                LEFT JOIN media_items m ON m.id = d.media_id
+                WHERE d.status = 'awaiting_human_approval'
+                ORDER BY d.rowid DESC
+                LIMIT 25
+                """
+            ).fetchall()
+        finally:
+            con.close()
+
+        items = []
+        for r in rows:
+            d = dict(r)
+            titles = []
+            j_path = Path(d.get("draft_json_path") or "")
+            if j_path.exists():
+                try:
+                    payload = _json.loads(j_path.read_text(encoding="utf-8"))
+                    titles = payload.get("proposed_titles") or []
+                except Exception:
+                    pass
+            d["proposed_titles"] = titles
+            items.append(d)
+        return {"drafts": items}
+
+    @router.post("/archive/media-drafts/{draft_id}/decision")
+    async def decide_media_publishing_draft_route(
+        draft_id: str,
+        request: Request,
+        body: MediaDraftDecisionRequest,
+        user: str = Depends(require_user),
+    ):
+        """Record human approval or dismissal for an M9 publishing draft (auto-upload stays blocked)."""
+        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        is_admin = bool(
+            auth_disabled()
+            or (user and auth_mgr is not None and getattr(auth_mgr, "is_configured", False) and auth_mgr.is_admin(user))
+        )
+        if not is_admin:
+            require_privilege(request, "can_use_documents")
+
+        import json as _json
+        import sqlite3 as _sqlite3
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from scripts.stream_pipeline import STREAM_DB
+
+        if not STREAM_DB.exists():
+            raise HTTPException(404, "Stream media catalog not initialized.")
+
+        con = _sqlite3.connect(str(STREAM_DB))
+        con.row_factory = _sqlite3.Row
+        try:
+            row = con.execute(
+                "SELECT draft_id, status, draft_json_path FROM publishing_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f"Draft {draft_id!r} not found.")
+            con.execute(
+                "UPDATE publishing_drafts SET status = ? WHERE draft_id = ?",
+                (body.decision, draft_id),
+            )
+            con.commit()
+            j_path = Path(row["draft_json_path"] or "")
+            if j_path.exists():
+                payload = _json.loads(j_path.read_text(encoding="utf-8"))
+                payload["status"] = body.decision
+                payload["auto_upload_blocked"] = True
+                payload["reviewed_by"] = user or "admin"
+                payload["reviewed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                j_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        finally:
+            con.close()
+
+        return {"success": True, "draft_id": draft_id, "status": body.decision, "auto_upload_blocked": True}
 
     return router
