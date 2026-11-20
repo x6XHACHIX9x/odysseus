@@ -11,7 +11,7 @@ MODULE = (ROOT / "static/js/editor/layer-groups.js").as_uri()
 def run_node(body: str):
     script = textwrap.dedent(
         f"""
-        import {{allLayerIdsInGroup,createGroupFromSelection,drawGroupedLayers,groupSiblingUnits,isLayerEffectivelyLocked,isLayerPixelLocked,isLayerPositionLocked,isLayerTransparencyLocked,layerHasAnyLock,normalizeLayerGroups,normalizeLayerLocks,reorderGroupAmongSiblings,ungroupLayers}} from {json.dumps(MODULE)};
+        import {{allLayerIdsInGroup,createGroupFromSelection,drawGroupedLayers,drawGroupedLayersAsync,groupSiblingUnits,isLayerEffectivelyLocked,isLayerPixelLocked,isLayerPositionLocked,isLayerTransparencyLocked,layerHasAnyLock,normalizeLayerGroups,normalizeLayerLocks,reorderGroupAmongSiblings,ungroupLayers}} from {json.dumps(MODULE)};
         {body}
         """
     )
@@ -223,3 +223,60 @@ def test_independent_layer_locks_normalize_and_group_lock_overrides_every_type()
     }
     assert result["inherited"] == {"pixels": True, "transparency": True, "position": True}
     assert result["invalid"] == {"pixels": False, "transparency": False, "position": False}
+
+
+def test_nested_group_effects_apply_to_each_isolation_surface_before_parent_blend():
+    result = run_node(
+        """
+        const operations=[];
+        const makeCtx=tag=>({tag,_alpha:1,_gco:'source-over',clearRect(){},drawImage(image){operations.push([tag,'draw',image.tag,this._alpha,this._gco]);},set globalAlpha(v){this._alpha=v},get globalAlpha(){return this._alpha},set globalCompositeOperation(v){this._gco=v},get globalCompositeOperation(){return this._gco}});
+        let index=0;
+        globalThis.document={createElement:()=>{const tag=`surface-${++index}`;return {tag,width:0,height:0,getContext:()=>makeCtx(tag)}}};
+        const layers=[{id:'a',visible:true,opacity:1},{id:'b',visible:true,opacity:1}];
+        const state={imgWidth:20,imgHeight:20,layers,layerOffsets:new Map(),layerGroups:[
+          {id:'outer',layerIds:['b'],opacity:.6,blendMode:'multiply',effects:[{id:'fx-out',type:'drop-shadow',visible:true}]},
+          {id:'inner',parentId:'outer',layerIds:['a'],opacity:.75,blendMode:'screen',effects:[{id:'fx-in',type:'color-overlay',visible:true}]},
+        ]};
+        drawGroupedLayers(
+          makeCtx('target'),
+          state,
+          layer=>({tag:layer.id}),
+          null,
+          (surface,group)=>{
+            operations.push(['effect',group.id,surface.tag,group.effects.map(e=>e.id)]);
+            return {tag:`${surface.tag}-fx`};
+          },
+        );
+        console.log(JSON.stringify(operations));
+        """
+    )
+    assert ["surface-2", "draw", "a", 1, "source-over"] in result
+    assert ["effect", "inner", "surface-2", ["fx-in"]] in result
+    assert ["surface-1", "draw", "surface-2-fx", 0.75, "screen"] in result
+    assert ["surface-1", "draw", "b", 1, "source-over"] in result
+    assert ["effect", "outer", "surface-1", ["fx-out"]] in result
+    assert ["target", "draw", "surface-1-fx", 0.6, "multiply"] in result
+    assert result.index(["effect", "inner", "surface-2", ["fx-in"]]) < result.index(["surface-1", "draw", "surface-2-fx", 0.75, "screen"])
+    assert result.index(["effect", "outer", "surface-1", ["fx-out"]]) < result.index(["target", "draw", "surface-1-fx", 0.6, "multiply"])
+
+
+def test_async_group_compositor_aborts_cleanly_when_generation_invalidated():
+    result = run_node(
+        """
+        const operations=[];
+        const makeCtx=tag=>({tag,_alpha:1,_gco:'source-over',clearRect(){operations.push([tag,'clear']);},drawImage(image){operations.push([tag,'draw',image.tag]);},set globalAlpha(v){this._alpha=v},get globalAlpha(){return this._alpha},set globalCompositeOperation(v){this._gco=v},get globalCompositeOperation(){return this._gco}});
+        globalThis.document={createElement:()=>({tag:'surface',width:0,height:0,getContext:()=>makeCtx('surface')})};
+        let active=true;
+        const state={imgWidth:16,imgHeight:16,layers:[{id:'a',visible:true}],layerOffsets:new Map(),layerGroups:[{id:'g',layerIds:['a'],effects:[{id:'fx',type:'gaussian-blur',visible:true}]}]};
+        await drawGroupedLayersAsync(
+          makeCtx('target'),
+          state,
+          async layer=>{ active=false; return {tag:layer.id}; },
+          null,
+          async surface=>({tag:`${surface.tag}-fx`}),
+          ()=>active,
+        );
+        console.log(JSON.stringify(operations));
+        """
+    )
+    assert result == [["target", "clear"]]

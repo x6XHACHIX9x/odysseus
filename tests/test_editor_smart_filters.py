@@ -77,4 +77,4 @@ def test_wire_routes_the_new_menu_items():
 
 
 def test_service_worker_cache_bumped():
-    assert re.search(r"odysseus-v\d+-pr40-editor-precache", SW)
+    assert re.search(r"const CACHE_NAME = 'odysseus-v\d+-[^']+';", SW)

@@ -452,3 +452,64 @@ test('flattened export and reopened project match pixel-for-pixel across adjustm
   await reopenDraft(page, draftId);
   expect(await flattenedPixelDigest(page)).toEqual(expectedPixels);
 });
+
+
+test('nested groups with group-level effects and non-default blend modes survive export and draft reopen', async ({ page }) => {
+  await openBlankEditor(page, { width: 320, height: 220 }, 'Nested group effects E2E');
+  await page.evaluate(async () => {
+    const { state } = await import('/static/js/editor/state.js');
+    const { createGroupFromSelection } = await import('/static/js/editor/layer-groups.js');
+    const { normalizeEffect } = await import('/static/js/editor/effects.js');
+    const base = state.layers.find(item => item.id === state.activeLayerId);
+    base.ctx.fillStyle = '#335c67';
+    base.ctx.fillRect(0, 0, base.canvas.width, base.canvas.height);
+
+    document.querySelector('#ge-add-layer').click();
+    document.querySelector('#ge-add-layer').click();
+    document.querySelector('#ge-add-layer').click();
+
+    const [topLayer, midDetail, midBase] = state.layers.filter(l => l.id !== base.id);
+    midBase.name = 'Inner Subject';
+    midBase.ctx.fillStyle = '#e09f3e';
+    midBase.ctx.fillRect(35, 30, 110, 90);
+
+    midDetail.name = 'Inner Detail';
+    midDetail.ctx.fillStyle = '#540b0e';
+    midDetail.ctx.fillRect(55, 45, 65, 55);
+
+    topLayer.name = 'Outer Accent';
+    topLayer.ctx.fillStyle = '#9e2a2b';
+    topLayer.ctx.fillRect(100, 65, 130, 95);
+
+    state.selectedLayerIds = [midBase.id, midDetail.id];
+    const innerGroup = createGroupFromSelection(state, 'Inner Group');
+    innerGroup.blendMode = 'screen';
+    innerGroup.opacity = 0.85;
+    innerGroup.effects = [
+      normalizeEffect({ type: 'color-overlay', params: { color: '#fff3b0', opacity: 0.35, blendMode: 'source-atop' } }),
+    ];
+
+    state.selectedLayerIds = [midBase.id, midDetail.id, topLayer.id];
+    const outerGroup = createGroupFromSelection(state, 'Outer Group');
+    outerGroup.blendMode = 'multiply';
+    outerGroup.opacity = 0.9;
+    outerGroup.effects = [
+      normalizeEffect({ type: 'drop-shadow', params: { color: '#000000', opacity: 0.65, blur: 10, x: 5, y: 6 } }),
+    ];
+
+    window.galleryEditorComposite?.();
+  });
+
+  const expectedPixels = await flattenedPixelDigest(page);
+  const exportedPng = await page.evaluate(async () => {
+    const editor = await import('/static/js/galleryEditor.js');
+    return editor.exportPNG();
+  });
+  expect(
+    await encodedImagePixelDigest(page, Buffer.from(exportedPng.split(',', 2)[1], 'base64'))
+  ).toEqual(expectedPixels);
+
+  const draftId = await waitForDraft(page);
+  await reopenDraft(page, draftId);
+  expect(await flattenedPixelDigest(page)).toEqual(expectedPixels);
+});

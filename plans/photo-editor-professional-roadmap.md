@@ -312,11 +312,11 @@ effect presets.
 
 ### Acceptance criteria
 
-- [ ] Effects can be added, reordered, toggled, edited, masked, and removed.
-- [ ] Drop shadow, stroke, color overlay, blur, and sharpen survive project reopen.
-- [ ] Effects render correctly inside groups and clipping stacks.
-- [ ] Apply/rasterize produces a pixel-equivalent raster result.
-- [ ] Expensive filters expose progress and cancellation.
+- [x] Effects can be added, reordered, toggled, edited, masked, and removed.
+- [x] Drop shadow, stroke, color overlay, blur, and sharpen survive project reopen.
+- [x] Effects render correctly inside groups and clipping stacks.
+- [x] Apply/rasterize produces a pixel-equivalent raster result.
+- [x] Expensive filters expose progress and cancellation.
 
 ---
 
