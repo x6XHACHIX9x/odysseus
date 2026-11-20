@@ -56,3 +56,7 @@ timetree*.png
 # Include distribution notices despite the general documentation exclusion.
 !ACKNOWLEDGMENTS.md
 !services/hwfit/data/README.md
+
+.venv
+.venv-linux
+

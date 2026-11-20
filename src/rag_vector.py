@@ -520,9 +520,12 @@ class VectorRAG:
                         if ext == '.pdf':
                             from src.personal_docs import extract_pdf_text
                             content = extract_pdf_text(fpath)
+                        elif ext == '.csv' and os.path.getsize(fpath) > 2 * 1024 * 1024:
+                            logger.info(f"Skipping oversized CSV telemetry dump (>2MB): {fpath}")
+                            continue
                         else:
-                            with open(fpath, 'r', encoding='utf-8') as f:
-                                content = f.read()
+                            from src.personal_docs import read_text_file
+                            content = read_text_file(fpath)
 
                         if not content or not content.strip():
                             continue

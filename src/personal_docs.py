@@ -48,7 +48,7 @@ class PersonalDocsConfig:
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     DEFAULT_EXTENSIONS: Tuple[str, ...] = (
-        ".txt", ".md", ".json", ".pdf", ".doc", ".docx", ".pptx", ".xlsx", ".xls", ".epub",
+        ".txt", ".md", ".json", ".csv", ".pdf", ".doc", ".docx", ".pptx", ".xlsx", ".xls", ".epub",
     )
     DEFAULT_K: int = 5
     STOP_WORDS: Set[str] = None
@@ -65,10 +65,18 @@ class PersonalDocsConfig:
 config = PersonalDocsConfig()
 
 def read_text_file(path: str) -> str:
-    """Read a text file with error handling."""
+    """Read a text/CSV file with UTF-16 BOM, UTF-8-SIG, and Windows-1252 fallback."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
+        with open(path, "rb") as fb:
+            raw = fb.read()
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return raw.decode("utf-16", errors="replace")
+        for enc in ("utf-8-sig", "cp1252"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
     except Exception:
         return ""
 

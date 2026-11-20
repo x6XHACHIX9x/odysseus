@@ -66,3 +66,9 @@ httpx2
 # create_engine() and raises ModuleNotFoundError if missing. -binary avoids
 # needing libpq-dev/pg_config on the host/image to compile it.
 psycopg2-binary
+
+# RFC 8785 JSON canonicalization for trust attestations.
+rfc8785
+
+# KeePass vault management for OVM.
+pykeepass
