@@ -313,3 +313,34 @@ def test_media_draft_list_and_decision_endpoints(tmp_path, monkeypatch) -> None:
     updated = json.loads(draft_json.read_text(encoding="utf-8"))
     assert updated["status"] == "approved"
     assert updated["auto_upload_blocked"] is True
+
+
+def test_docs_service_filters_low_score_and_garbled_ocr_chunks() -> None:
+    import asyncio
+
+    class _NoisyRag:
+        def search(self, query: str, k: int = 5):
+            return [
+                {
+                    "document": "l ( -l l l--El ,!:it ;,ff.r.i a .,;: f tl ,!, ,It a lpu",
+                    "source": "G:/Docs/51_Paramount.pdf",
+                    "similarity": 0.208,
+                    "metadata": {"owner_scope": "personal"},
+                },
+                {
+                    "document": "Valid high-confidence invoice summary for DJI Mavic Pro battery kit.",
+                    "source": "G:/Docs/DJI_Invoice.pdf",
+                    "similarity": 0.62,
+                    "metadata": {"owner_scope": "personal"},
+                },
+            ]
+
+    svc = DocsService.__new__(DocsService)
+    svc.rag = _NoisyRag()
+    svc.query_local_archive = lambda *a, **kw: asyncio.sleep(0, result=[])  # type: ignore[assignment]
+
+    from scripts.local_intelligence_gateway import AuthContext
+    auth = AuthContext(owner="hachi", scopes=frozenset({"docs:read", "personal:read"}), auth_method="session", session_id="s1")
+    chunks = asyncio.run(svc.query("DJI", top_k=5, auth_context=auth))
+    assert len(chunks) == 1
+    assert chunks[0].source == "G:/Docs/DJI_Invoice.pdf"

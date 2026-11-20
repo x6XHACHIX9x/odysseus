@@ -330,12 +330,11 @@ FTS_STOPWORDS: frozenset[str] = frozenset({
 })
 
 
-def _build_fts_queries(raw_query: str) -> tuple[str, str | None]:
+def _extract_search_tokens(raw_query: str) -> list[str]:
     tokens = re.findall(r"[A-Za-z0-9_'-]+", raw_query or "")
     if not tokens:
         raise ValueError("Search query must contain at least one searchable term.")
     meaningful = [t for t in tokens if t.lower() not in FTS_STOPWORDS] or tokens
-    # Deduplicate preserving order (case-insensitive)
     seen: set[str] = set()
     unique_tokens: list[str] = []
     for tok in meaningful:
@@ -343,9 +342,18 @@ def _build_fts_queries(raw_query: str) -> tuple[str, str | None]:
         if key not in seen:
             seen.add(key)
             unique_tokens.append(tok)
+    return unique_tokens
+
+
+def _build_fts_queries(raw_query: str) -> tuple[str, str | None]:
+    unique_tokens = _extract_search_tokens(raw_query)
     and_expr = " ".join(f'"{tok}"' for tok in unique_tokens)
     or_expr = " OR ".join(f'"{tok}"' for tok in unique_tokens) if len(unique_tokens) > 1 else None
     return and_expr, or_expr
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _sanitize_fts_query(raw_query: str) -> str:
@@ -397,13 +405,14 @@ def _search_ocr_docs(
     fetch_limit: int,
     suppress_restricted_pii: bool,
     redact_sensitive: bool,
+    meta_tokens: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     scope_ph = ", ".join("?" for _ in owner_scopes)
     tier_ph = ", ".join("?" for _ in allowed_tiers)
 
     con = ro_connect(ocr_db)
     try:
-        rows = con.execute(
+        rows = list(con.execute(
             f"""
             SELECT
                 p.sha256 AS sha256,
@@ -426,7 +435,43 @@ def _search_ocr_docs(
             LIMIT ?
             """,
             (fts_query, *owner_scopes, *allowed_tiers, fetch_limit),
-        ).fetchall()
+        ).fetchall())
+
+        if meta_tokens:
+            seen_keys = {(r["sha256"], r["page_num"]) for r in rows}
+            like_clauses = []
+            like_params: list[Any] = []
+            for tok in meta_tokens:
+                pat = f"%{_escape_like(tok)}%"
+                like_clauses.append("(d.filename LIKE ? ESCAPE '\\' OR COALESCE(d.category, '') LIKE ? ESCAPE '\\')")
+                like_params.extend([pat, pat])
+            meta_rows = con.execute(
+                f"""
+                SELECT
+                    d.sha256 AS sha256,
+                    d.source_path AS source_path,
+                    d.filename AS filename,
+                    d.owner_scope AS owner_scope,
+                    d.sensitivity_tier AS sensitivity_tier,
+                    d.category AS category,
+                    COALESCE(p.page_num, 1) AS page_num,
+                    COALESCE(p.extracted_text, '') AS extracted_text,
+                    0.0 AS raw_bm25
+                FROM ocr_documents d
+                LEFT JOIN ocr_pages p ON p.sha256 = d.sha256 AND p.page_num = 1
+                WHERE d.status = 'completed'
+                  AND d.owner_scope IN ({scope_ph})
+                  AND d.sensitivity_tier IN ({tier_ph})
+                  AND ({' AND '.join(like_clauses)})
+                LIMIT ?
+                """,
+                (*owner_scopes, *allowed_tiers, *like_params, fetch_limit),
+            ).fetchall()
+            for mr in meta_rows:
+                key = (mr["sha256"], mr["page_num"])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    rows.append(mr)
     finally:
         con.close()
 
@@ -467,10 +512,11 @@ def _search_media_transcripts(
     media_db: Path,
     fetch_limit: int,
     redact_sensitive: bool,
+    meta_tokens: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     con = ro_connect(media_db)
     try:
-        rows = con.execute(
+        rows = list(con.execute(
             """
             SELECT
                 m.id AS media_id,
@@ -494,7 +540,62 @@ def _search_media_transcripts(
             LIMIT ?
             """,
             (fts_query, fetch_limit),
-        ).fetchall()
+        ).fetchall())
+
+        if meta_tokens:
+            seen_media_ids = {int(r["media_id"]) for r in rows if r["media_id"] is not None}
+            like_clauses = []
+            like_params: list[Any] = []
+            for tok in meta_tokens:
+                pat = f"%{_escape_like(tok)}%"
+                like_clauses.append(
+                    "(m.filename LIKE ? ESCAPE '\\' OR COALESCE(m.media_role, '') LIKE ? ESCAPE '\\' OR COALESCE(m.source_path, '') LIKE ? ESCAPE '\\')"
+                )
+                like_params.extend([pat, pat, pat])
+            meta_rows = con.execute(
+                f"""
+                SELECT
+                    m.id AS media_id,
+                    m.source_path AS source_path,
+                    m.filename AS filename,
+                    m.scope AS storage_bucket,
+                    m.media_role AS media_role,
+                    m.duration_sec AS duration_sec,
+                    m.transcript_srt_path AS transcript_srt_path,
+                    m.transcript_json_path AS transcript_json_path,
+                    (
+                        SELECT s.start_sec FROM transcript_segments_fts s
+                        WHERE CAST(s.media_id AS TEXT) = CAST(m.id AS TEXT)
+                        ORDER BY CAST(s.start_sec AS REAL) ASC LIMIT 1
+                    ) AS start_sec,
+                    (
+                        SELECT s.end_sec FROM transcript_segments_fts s
+                        WHERE CAST(s.media_id AS TEXT) = CAST(m.id AS TEXT)
+                        ORDER BY CAST(s.start_sec AS REAL) ASC LIMIT 1
+                    ) AS end_sec,
+                    COALESCE(
+                        (
+                            SELECT s.segment_text FROM transcript_segments_fts s
+                            WHERE CAST(s.media_id AS TEXT) = CAST(m.id AS TEXT)
+                            ORDER BY CAST(s.start_sec AS REAL) ASC LIMIT 1
+                        ),
+                        '[Filename/role match: ' || COALESCE(m.media_role, 'media') || ' | status=' || COALESCE(m.transcript_status, 'unknown') || ']'
+                    ) AS segment_text,
+                    0.0 AS raw_bm25
+                FROM media_items m
+                WHERE m.is_duplicate = 0
+                  AND ({' AND '.join(like_clauses)})
+                ORDER BY CASE WHEN m.transcript_status = 'completed' THEN 0 ELSE 1 END, m.id DESC
+                LIMIT ?
+                """,
+                (*like_params, fetch_limit),
+            ).fetchall()
+            for mr in meta_rows:
+                mid = int(mr["media_id"]) if mr["media_id"] is not None else None
+                if mid not in seen_media_ids:
+                    if mid is not None:
+                        seen_media_ids.add(mid)
+                    rows.append(mr)
     finally:
         con.close()
 
@@ -573,10 +674,12 @@ def search_local_intelligence(
         max_sensitivity=max_sensitivity,
         expected_workstation_owner=expected_workstation_owner,
     )
+    meta_tokens = tuple(_extract_search_tokens(query))
     and_query, or_query = _build_fts_queries(query)
     per_domain_limit = max(limit * 2, 20)
 
-    def _run_domain_searches(fts_expr: str) -> list[list[dict[str, Any]]]:
+    def _run_domain_searches(fts_expr: str, include_meta: bool = True) -> list[list[dict[str, Any]]]:
+        toks = meta_tokens if include_meta else ()
         lists: list[list[dict[str, Any]]] = []
         if "docs" in allowed_domains:
             lists.append(
@@ -589,6 +692,7 @@ def search_local_intelligence(
                     fetch_limit=per_domain_limit,
                     suppress_restricted_pii=suppress_restricted_pii,
                     redact_sensitive=redact_sensitive,
+                    meta_tokens=toks,
                 )
             )
         if "media" in allowed_domains:
@@ -598,13 +702,14 @@ def search_local_intelligence(
                     media_db=media_db,
                     fetch_limit=per_domain_limit,
                     redact_sensitive=redact_sensitive,
+                    meta_tokens=toks,
                 )
             )
         return lists
 
-    ranked_lists = _run_domain_searches(and_query)
+    ranked_lists = _run_domain_searches(and_query, include_meta=True)
     if not any(ranked_lists) and or_query is not None:
-        ranked_lists = _run_domain_searches(or_query)
+        ranked_lists = _run_domain_searches(or_query, include_meta=False)
 
     results = fuse_rrf(ranked_lists, k=rrf_k, limit=limit)
     return {

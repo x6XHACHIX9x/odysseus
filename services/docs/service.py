@@ -53,6 +53,26 @@ class DocsService:
     def __init__(self, persist_dir: str = CHROMA_DIR):
         self.rag = RAGManager(persist_directory=persist_dir)
 
+    @staticmethod
+    def _is_noisy_ocr_chunk(text: str) -> bool:
+        """Detect garbled/low-signal OCR chunks dominated by random punctuation or isolated 1-2 char fragments."""
+        stripped = (text or "").strip()
+        if len(stripped) < 12:
+            return True
+        non_ws = [c for c in stripped if not c.isspace()]
+        if not non_ws:
+            return True
+        alnum_ratio = sum(1 for c in non_ws if c.isalnum()) / len(non_ws)
+        if alnum_ratio < 0.55:
+            return True
+        words = stripped.split()
+        if len(words) >= 6:
+            avg_word_len = sum(len(w) for w in words) / len(words)
+            short_words = sum(1 for w in words if len(w) <= 2) / len(words)
+            if avg_word_len < 2.6 or short_words > 0.65:
+                return True
+        return False
+
     async def query(
         self,
         query: str,
@@ -63,50 +83,17 @@ class DocsService:
         owner_scopes: Iterable[str] = ("personal", "business"),
         max_sensitivity: str | None = None,
         suppress_restricted_pii: bool = True,
+        min_semantic_score: float = 0.35,
     ) -> List[DocChunk]:
         """
-        Query the document index, optionally federating authorized local
-        archive/OCR/media hits when an authenticated AuthContext is provided.
+        Query the document index, prioritizing policy-enforced local archive/OCR/media
+        hits first and filtering low-confidence/noisy OCR chunks from vector fallback.
         """
-        results = self.rag.search(query, k=top_k)
+        domain_set = {d.strip().lower() for d in domains if d and d.strip()}
+        scope_set = {s.strip().lower() for s in owner_scopes if s and s.strip()}
+
         chunks: List[DocChunk] = []
-
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-
-            metadata = result.get("metadata")
-            if not isinstance(metadata, dict):
-                metadata = {}
-            metadata.setdefault("retrieval_tier", "chroma_rag")
-
-            text = (
-                result.get("document")
-                if result.get("document") is not None
-                else result.get("text")
-                if result.get("text") is not None
-                else result.get("content")
-                if result.get("content") is not None
-                else ""
-            )
-
-            source = result.get("source") or metadata.get("source") or "unknown"
-            score = (
-                result.get("similarity")
-                if result.get("similarity") is not None
-                else result.get("score")
-                if result.get("score") is not None
-                else 0.0
-            )
-
-            chunks.append(
-                DocChunk(
-                    text=text,
-                    source=source,
-                    score=float(score),
-                    metadata=metadata,
-                )
-            )
+        seen_sources: set[str] = set()
 
         if auth_context is not None:
             archive_chunks = await self.query_local_archive(
@@ -118,7 +105,63 @@ class DocsService:
                 top_k=top_k,
                 suppress_restricted_pii=suppress_restricted_pii,
             )
-            chunks.extend(archive_chunks)
+            for ac in archive_chunks:
+                chunks.append(ac)
+                if ac.source:
+                    seen_sources.add(ac.source)
+
+        # Only query ChromaDB document embeddings when 'docs' domain is active
+        if not domain_set or "docs" in domain_set:
+            results = self.rag.search(query, k=max(top_k * 2, 10))
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+
+                metadata = result.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata.setdefault("retrieval_tier", "chroma_rag")
+
+                chunk_scope = str(metadata.get("owner_scope") or "personal").strip().lower()
+                if scope_set and chunk_scope not in scope_set:
+                    continue
+
+                text = (
+                    result.get("document")
+                    if result.get("document") is not None
+                    else result.get("text")
+                    if result.get("text") is not None
+                    else result.get("content")
+                    if result.get("content") is not None
+                    else ""
+                )
+
+                source = result.get("source") or metadata.get("source") or "unknown"
+                if source in seen_sources:
+                    continue
+
+                score = float(
+                    result.get("similarity")
+                    if result.get("similarity") is not None
+                    else result.get("score")
+                    if result.get("score") is not None
+                    else 0.0
+                )
+
+                if auth_context is not None and score < min_semantic_score:
+                    continue
+                if self._is_noisy_ocr_chunk(text):
+                    continue
+
+                seen_sources.add(source)
+                chunks.append(
+                    DocChunk(
+                        text=text,
+                        source=source,
+                        score=score,
+                        metadata=metadata,
+                    )
+                )
 
         return chunks
 

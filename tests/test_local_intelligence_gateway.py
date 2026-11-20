@@ -470,3 +470,69 @@ def test_cp4c1_suppresses_actual_pin_and_password_credentials(secret_text: str, 
         assert was_redacted is True
         assert cleaned == "[CREDENTIAL-BEARING SNIPPET SUPPRESSED ? AUTHORIZED OWNER MUST INSPECT SOURCE FILE DIRECTLY]"
         assert secret_value not in cleaned
+
+
+def test_search_matches_media_and_doc_filenames_when_token_absent_from_body(tmp_path: Path) -> None:
+    ocr_db = tmp_path / "private_ocr_index.db"
+    media_db = tmp_path / "stream_media_catalog.db"
+    inv_db = tmp_path / "drive_inventory.db"
+
+    for db in (ocr_db, inv_db):
+        sqlite3.connect(db).close()
+
+    con = sqlite3.connect(media_db)
+    try:
+        con.execute(
+            """
+            CREATE TABLE media_items (
+                id INTEGER PRIMARY KEY,
+                source_path TEXT,
+                filename TEXT,
+                scope TEXT,
+                media_role TEXT,
+                duration_sec REAL,
+                is_duplicate INTEGER,
+                transcript_status TEXT,
+                transcript_srt_path TEXT,
+                transcript_json_path TEXT
+            )
+            """
+        )
+        con.execute(
+            "CREATE VIRTUAL TABLE transcript_segments_fts USING fts5(media_id, start_sec, end_sec, segment_text)"
+        )
+        con.execute(
+            """
+            INSERT INTO media_items(id, source_path, filename, scope, media_role, duration_sec, is_duplicate, transcript_status, transcript_srt_path, transcript_json_path)
+            VALUES (73, 'G:/Media/DJI_20260821184242_0263_D.MP4', 'DJI_20260821184242_0263_D.MP4', 'camera-raw', 'b-roll', 18.5, 0, 'completed', '', '')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO transcript_segments_fts(media_id, start_sec, end_sec, segment_text)
+            VALUES ('73', '1.0', '4.2', 'Yeah it is like the game is like us.')
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    auth = AuthContext(
+        owner="hachi",
+        scopes=frozenset({"docs:read", "media:read", "personal:read", "business:read"}),
+        auth_method="session",
+        session_id="sess-valid-1",
+    )
+    res = search_local_intelligence(
+        "DJI",
+        auth=auth,
+        domains=("media",),
+        ocr_db=ocr_db,
+        media_db=media_db,
+        inventory_db=inv_db,
+    )
+    assert res["result_count"] == 1
+    hit = res["results"][0]
+    assert hit["filename"] == "DJI_20260821184242_0263_D.MP4"
+    assert hit["media_id"] == 73
+    assert "game is like us" in hit["snippet"]
